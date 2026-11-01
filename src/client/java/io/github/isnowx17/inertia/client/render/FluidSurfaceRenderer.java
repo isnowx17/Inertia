@@ -494,10 +494,12 @@ public final class FluidSurfaceRenderer {
 			ay = ay / speed * halfLength;
 			az = az / speed * halfLength;
 
-			// Width axis: perpendicular to the streak and the view direction.
-			float bx = ey * az - ez * ay;
-			float by = ez * ax - ex * az;
-			float bz = ex * ay - ey * ax;
+			// Width axis: perpendicular to the streak and the view direction. The order (a x e) makes
+			// the quad wind counter-clockwise on screen, i.e. front-facing: the entity shader lights
+			// back faces with the inverted normal, which made foam drawn this way grey.
+			float bx = ay * ez - az * ey;
+			float by = az * ex - ax * ez;
+			float bz = ax * ey - ay * ex;
 			float blen = Mth.sqrt(bx * bx + by * by + bz * bz);
 			float halfWidth = size * 0.6f;
 			bx = bx / blen * halfWidth;
