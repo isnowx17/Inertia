@@ -23,8 +23,10 @@ All notable changes to Inertia are documented here. Versioning rules are describ
   frame rate even when meshing takes longer than a frame.
 - More GPU room for particle contacts so large amounts of water do not leak through blocks.
 - Default quality is `medium` (1000 particles per block, previously 512).
-- Foam is only drawn where it floats on the water surface (not spray in the air or bubbles deep
-  inside), faces up and takes the light from above, so it stays white instead of turning grey.
+- Foam is white instead of grey: its quads were wound back-facing, and Minecraft's entity shader
+  lights back faces with the inverted normal (ambient light only). Foam is also only drawn where
+  it floats on the water surface (not spray in the air or bubbles deep inside) and takes the light
+  from above.
 - Lone particles resting on the ground are no longer drawn as blue balls; only moving spray is.
 - Surface light is sampled just outside the water, so water touching blocks is not darkened.
 
