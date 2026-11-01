@@ -1,32 +1,58 @@
 name: Release
 
-# Pushing a tag like v0.1.1 builds the Windows and Linux jars and publishes them as a GitHub
-# release. The tag must match mod_version in gradle.properties.
+# Publishes a GitHub release whenever mod_version in gradle.properties is a version that has not
+# been released yet: the Windows and Linux jars are built and attached, the tag v<version> is
+# created on the pushed commit, and the notes come from CHANGELOG.md.
 on:
   push:
-    tags:
-      - 'v*'
+    branches:
+      - '**'
+    paths:
+      - gradle.properties
+      - CHANGELOG.md
+      - .github/workflows/release.yml
+  workflow_dispatch:
 
 permissions:
   contents: write
 
 jobs:
+  check:
+    name: Check version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      release: ${{ steps.version.outputs.release }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: version
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version=$(grep '^mod_version=' gradle.properties | cut -d= -f2)
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          if ! grep -q "^## \[${version}\]" CHANGELOG.md; then
+            echo "CHANGELOG.md has no entry for ${version}; not releasing"
+            echo "release=false" >> "$GITHUB_OUTPUT"
+          elif gh release view "v${version}" --repo "${GITHUB_REPOSITORY}" > /dev/null 2>&1; then
+            echo "v${version} is already released"
+            echo "release=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "Releasing v${version}"
+            echo "release=true" >> "$GITHUB_OUTPUT"
+          fi
+
   build:
     name: Build (${{ matrix.platform }})
+    needs: check
+    if: needs.check.outputs.release == 'true'
     runs-on: ubuntu-latest
     strategy:
       matrix:
         platform: [windows, linux]
     steps:
       - uses: actions/checkout@v4
-
-      - name: Check tag matches mod_version
-        run: |
-          version=$(grep '^mod_version=' gradle.properties | cut -d= -f2)
-          if [ "v${version}" != "${GITHUB_REF_NAME}" ]; then
-            echo "Tag ${GITHUB_REF_NAME} does not match mod_version ${version}" >&2
-            exit 1
-          fi
 
       - uses: actions/setup-java@v4
         with:
@@ -46,8 +72,10 @@ jobs:
 
   release:
     name: Publish release
-    needs: build
+    needs: [check, build]
     runs-on: ubuntu-latest
+    env:
+      VERSION: ${{ needs.check.outputs.version }}
     steps:
       - uses: actions/checkout@v4
 
@@ -58,7 +86,7 @@ jobs:
 
       - name: Release notes from CHANGELOG.md
         run: |
-          version="${GITHUB_REF_NAME#v}"
+          version="${VERSION}"
           awk -v v="$version" '
             $0 ~ "^## \\[" v "\\]" { found = 1; next }
             found && /^## \[/ { exit }
@@ -75,14 +103,16 @@ jobs:
             echo "- Windows: \`inertia-${version}+26.3-windows.jar\`"
             echo "- Linux: \`inertia-${version}+26.3-linux.jar\`"
             echo
-            echo "Full feature list and history: [CHANGELOG.md](https://github.com/${GITHUB_REPOSITORY}/blob/${GITHUB_REF_NAME}/CHANGELOG.md)"
+            echo "Full feature list and history: [CHANGELOG.md](https://github.com/${GITHUB_REPOSITORY}/blob/v${version}/CHANGELOG.md)"
           } >> notes.md
           cat notes.md
 
       - uses: softprops/action-gh-release@v2
         with:
-          name: Inertia ${{ github.ref_name }}
+          tag_name: v${{ env.VERSION }}
+          target_commitish: ${{ github.sha }}
+          name: Inertia ${{ env.VERSION }}
           body_path: notes.md
-          prerelease: ${{ startsWith(github.ref_name, 'v0.') }}
+          prerelease: ${{ startsWith(env.VERSION, '0.') }}
           files: dist/*.jar
           fail_on_unmatched_files: true

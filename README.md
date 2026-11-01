@@ -75,9 +75,9 @@ The jars are written to `build/libs/`. Without `-Pplatform` the current operatin
 used. The CUDA build of physx-jni is downloaded from its GitHub release and its SHA-256 checksum
 is verified during the build.
 
-To publish a release, set `mod_version` in `gradle.properties`, add the version to
-`CHANGELOG.md` and push a tag `v<version>`. GitHub Actions builds both jars and attaches them to
-the release.
+To publish a release, set `mod_version` in `gradle.properties`, add a `## [<version>]` entry to
+`CHANGELOG.md` and push. If that version has not been released yet, GitHub Actions builds both
+jars, creates the tag `v<version>` and publishes the release.
 
 ## How it works
 
