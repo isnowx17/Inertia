@@ -247,10 +247,11 @@ void main() {
 
     vec3 color = mix(body, reflectionColor, fresnel) + sunColor;
 
-    // Foam: churned water turns white, broken up by noise.
-    float foamNoise = noised(worldPosition.xz * 6.0 + vec2(time * 0.5)).x;
-    float foamAmount = clamp(foam * (0.6 + 0.8 * foamNoise), 0.0, 1.0);
-    color = mix(color, vec3(0.92, 0.96, 1.0) * diffuseLight * lightMapColor.rgb, foamAmount * 0.7);
+    // Foam: churned, fast-moving water gets a marbled web of white foam lines.
+    float web = causticLayer(worldPosition.xz * 1.1 + vec2(time * 0.05, -time * 0.04), time * 0.35);
+    float churn = clamp(foam * 1.4, 0.0, 1.0);
+    float foamAmount = churn * smoothstep(0.12, 0.55, web + churn * 0.35);
+    color = mix(color, vec3(0.95, 0.97, 1.0) * diffuseLight * lightMapColor.rgb, foamAmount * 0.85);
 
     // Soft shoreline: very thin water fades into the ground instead of ending in a hard edge.
     float edge = smoothstep(0.0, TextureMat[1].w, distanceInWater + fresnel * 0.2 + foamAmount);

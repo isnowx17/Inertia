@@ -3,6 +3,21 @@
 All notable changes to Inertia are documented here. Versioning rules are described in
 [PLAN.md](PLAN.md#5-sürümleme).
 
+## [0.4.0] — Beta
+
+### Changed
+- **Performance:** the GPU simulation step and the read-back of the results run on their own
+  physics thread. The game no longer waits for the GPU every tick; each tick collects the previous
+  step's results and starts the next one, which the tick interpolation hides. `/inertia info` now
+  shows the GPU step time.
+- The water surface is rebuilt at most 40 times per second (it follows the flow in between), so
+  meshing no longer competes with chunk building for CPU time.
+- **Foam:** foam on the surface is drawn as thin streaks lying flat on the water and stretched
+  along the current, with a new wispy foam texture, so moving water forms white foam lines.
+  Spray just above the water is drawn as small white flecks. Default `foamAmount` 0.5 and
+  `foamLifetime` 4 s (old defaults in config files are updated).
+- **Shader foam:** fast-moving water gets a marbled web of white foam lines on its surface.
+
 ## [0.3.0] — Beta
 
 First release since 0.1.1; it also contains the 0.2.0 changes listed below, which were not

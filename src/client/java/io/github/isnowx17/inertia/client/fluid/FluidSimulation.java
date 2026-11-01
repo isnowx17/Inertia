@@ -99,6 +99,28 @@ public final class FluidSimulation implements AutoCloseable {
 	private long devicePhases;
 
 	// Java-side copies (xyz per particle, relative to the origin).
+	// Back buffers written by the physics thread and swapped in by awaitStep().
+	private float[] nextPos = new float[0];
+	private float[] nextVel = new float[0];
+	private float[] nextFoam = new float[0];
+	private int nextFoamCount;
+	private long stepFinishedNanos;
+
+	/** Runs the GPU step and read-back off the client thread. */
+	private final java.util.concurrent.ExecutorService stepper = java.util.concurrent.Executors.newSingleThreadExecutor(r -> {
+		Thread thread = new Thread(r, "Inertia physics");
+		thread.setDaemon(true);
+		return thread;
+	});
+	private java.util.concurrent.Future<?> pendingStep;
+	private int stepParticleCount;
+	private boolean stepHidesFoam;
+	// Despawn parameters captured when a step is launched.
+	private float despawnMinY;
+	private float despawnPlayerX;
+	private float despawnPlayerY;
+	private float despawnPlayerZ;
+
 	private float[] prevPos;
 	private float[] currPos;
 	private float[] velocity;
@@ -268,6 +290,8 @@ public final class FluidSimulation implements AutoCloseable {
 		deviceVelocities = PxCudaTopLevelFunctions.pxVec4deviceptr(buffer.getVelocities());
 		devicePhases = PxCudaTopLevelFunctions.pxU32deviceptr(buffer.getPhases());
 
+		nextPos = new float[newCapacity * 3];
+		nextVel = new float[newCapacity * 3];
 		prevPos = java.util.Arrays.copyOf(prevPos, newCapacity * 3);
 		currPos = java.util.Arrays.copyOf(currPos, newCapacity * 3);
 		velocity = java.util.Arrays.copyOf(velocity, newCapacity * 3);
@@ -322,6 +346,7 @@ public final class FluidSimulation implements AutoCloseable {
 	 * @return number of particles actually added (fewer than a full block when near the limit)
 	 */
 	public int spawnBlock(Vec3 center, Vec3 initialVelocity) {
+		awaitStep();
 		// Re-centre the scene whenever it is empty. While water exists the origin stays put; all
 		// water is within the despawn distance of the player, so floats remain precise.
 		if (activeCount == 0 || !originSet) {
@@ -399,6 +424,7 @@ public final class FluidSimulation implements AutoCloseable {
 	 * @return number of particles added
 	 */
 	public int spawnStream(Vec3 center, Vec3 direction, float radius, float speed) {
+		awaitStep();
 		if (activeCount == 0 || !originSet) {
 			rebase(BlockPos.containing(center));
 		}
@@ -531,8 +557,16 @@ public final class FluidSimulation implements AutoCloseable {
 	// Ticking
 	// ------------------------------------------------------------------------------------------
 
-	/** Advances the simulation by one game tick. Must be called on the client thread. */
+	/**
+	 * Advances the simulation by one game tick. Must be called on the client thread.
+	 *
+	 * <p>The GPU step of the previous tick is collected first; then collision geometry and the
+	 * player body are updated and the next step is started on the physics thread. Rendering
+	 * therefore never waits for the GPU: the results arrive one tick later, which the tick
+	 * interpolation already hides.
+	 */
 	public void tick(ClientLevel level, Player player) {
+		awaitStep();
 		tick++;
 		if (activeCount == 0) {
 			foamCount = 0;
@@ -541,11 +575,21 @@ public final class FluidSimulation implements AutoCloseable {
 			return;
 		}
 
-		long started = System.nanoTime();
-
 		updateTerrain(level);
 		playerBody.update(player, originX, originY, originZ, config.playerInteraction);
 
+		despawnMinY = level.getMinY() - BELOW_WORLD_MARGIN - originY;
+		despawnPlayerX = (float) (player.getX() - originX);
+		despawnPlayerY = (float) (player.getY() - originY);
+		despawnPlayerZ = (float) (player.getZ() - originZ);
+		stepParticleCount = activeCount;
+		stepHidesFoam = tick < foamHiddenUntilTick;
+		pendingStep = stepper.submit(this::step);
+	}
+
+	/** Physics thread: simulate the sub-steps and read the results back into the back buffers. */
+	private void step() {
+		long started = System.nanoTime();
 		float dt = TICK_SECONDS / substeps;
 		for (int i = 0; i < substeps; i++) {
 			scene.simulate(dt);
@@ -553,12 +597,62 @@ public final class FluidSimulation implements AutoCloseable {
 		}
 		scene.fetchResultsParticleSystem();
 
-		readBack();
+		int count = stepParticleCount;
+		cuda.acquireContext();
+		try {
+			int bytes = count * VEC4_BYTES;
+			cuda.getCudaContext().memcpyDtoH(hostPositions, devicePositions, bytes);
+			cuda.getCudaContext().memcpyDtoH(hostVelocities, deviceVelocities, bytes);
+		} finally {
+			cuda.releaseContext();
+		}
+		for (int i = 0; i < count; i++) {
+			nextPos[i * 3] = hostPos.get(i * 4);
+			nextPos[i * 3 + 1] = hostPos.get(i * 4 + 1);
+			nextPos[i * 3 + 2] = hostPos.get(i * 4 + 2);
+			nextVel[i * 3] = hostVel.get(i * 4);
+			nextVel[i * 3 + 1] = hostVel.get(i * 4 + 1);
+			nextVel[i * 3 + 2] = hostVel.get(i * 4 + 2);
+		}
 		readBackFoam();
-		readBackNanos = System.nanoTime();
-		removeLostParticles(level, player);
 
-		lastStepMillis = (System.nanoTime() - started) / 1_000_000f;
+		stepFinishedNanos = System.nanoTime();
+		lastStepMillis = (stepFinishedNanos - started) / 1_000_000f;
+	}
+
+	/**
+	 * Waits for the running GPU step (if any), publishes its results and removes lost particles.
+	 * Everything that touches the PhysX scene or the particle buffer calls this first.
+	 */
+	private void awaitStep() {
+		java.util.concurrent.Future<?> step = pendingStep;
+		if (step == null) {
+			return;
+		}
+		pendingStep = null;
+		try {
+			step.get();
+		} catch (InterruptedException e) {
+			Thread.currentThread().interrupt();
+			throw new IllegalStateException("Interrupted while waiting for the physics step", e);
+		} catch (java.util.concurrent.ExecutionException e) {
+			throw new IllegalStateException("Physics step failed", e.getCause());
+		}
+
+		float[] oldPrev = prevPos;
+		prevPos = currPos;
+		currPos = nextPos;
+		nextPos = oldPrev;
+		float[] oldVelocity = velocity;
+		velocity = nextVel;
+		nextVel = oldVelocity;
+		float[] oldFoam = foam;
+		foam = nextFoam;
+		nextFoam = oldFoam;
+		foamCount = nextFoamCount;
+		readBackNanos = stepFinishedNanos;
+
+		removeLostParticles();
 	}
 
 	private void updateTerrain(ClientLevel level) {
@@ -612,35 +706,12 @@ public final class FluidSimulation implements AutoCloseable {
 		terrain.update(level, required, urgent, tick);
 	}
 
-	private void readBack() {
-		cuda.acquireContext();
-		try {
-			int bytes = activeCount * VEC4_BYTES;
-			cuda.getCudaContext().memcpyDtoH(hostPositions, devicePositions, bytes);
-			cuda.getCudaContext().memcpyDtoH(hostVelocities, deviceVelocities, bytes);
-		} finally {
-			cuda.releaseContext();
-		}
-
-		float[] swap = prevPos;
-		prevPos = currPos;
-		currPos = swap;
-		for (int i = 0; i < activeCount; i++) {
-			currPos[i * 3] = hostPos.get(i * 4);
-			currPos[i * 3 + 1] = hostPos.get(i * 4 + 1);
-			currPos[i * 3 + 2] = hostPos.get(i * 4 + 2);
-			velocity[i * 3] = hostVel.get(i * 4);
-			velocity[i * 3 + 1] = hostVel.get(i * 4 + 1);
-			velocity[i * 3 + 2] = hostVel.get(i * 4 + 2);
-		}
-	}
-
 	/** Removes particles that fell out of the world, drifted too far away or became invalid. */
-	private void removeLostParticles(ClientLevel level, Player player) {
-		float minY = level.getMinY() - BELOW_WORLD_MARGIN - originY;
-		float px = (float) (player.getX() - originX);
-		float py = (float) (player.getY() - originY);
-		float pz = (float) (player.getZ() - originZ);
+	private void removeLostParticles() {
+		float minY = despawnMinY;
+		float px = despawnPlayerX;
+		float py = despawnPlayerY;
+		float pz = despawnPlayerZ;
 		float maxDistSq = (float) config.despawnDistance * config.despawnDistance;
 
 		int before = activeCount;
@@ -684,14 +755,15 @@ public final class FluidSimulation implements AutoCloseable {
 		}
 	}
 
-	/** Removes all water but keeps the GPU resources for reuse. */
+	/** Physics thread: copies the foam, spray and bubble particles into the back buffer. */
 	private void readBackFoam() {
 		if (diffuseBuffer == null) {
+			nextFoamCount = 0;
 			return;
 		}
 		int count = Math.min(diffuseBuffer.getNbActiveDiffuseParticles(), maxFoam);
-		if (count <= 0 || tick < foamHiddenUntilTick) {
-			foamCount = 0;
+		if (count <= 0 || stepHidesFoam) {
+			nextFoamCount = 0;
 			return;
 		}
 		long device = PxCudaTopLevelFunctions.pxVec4deviceptr(diffuseBuffer.getDiffusePositionLifeTime());
@@ -701,14 +773,16 @@ public final class FluidSimulation implements AutoCloseable {
 		} finally {
 			cuda.releaseContext();
 		}
-		if (foam.length < count * 4) {
-			foam = new float[Math.max(count * 4, foam.length * 2)];
+		if (nextFoam.length < count * 4) {
+			nextFoam = new float[Math.max(count * 4, nextFoam.length * 2)];
 		}
-		hostDiffuseView.get(0, foam, 0, count * 4);
-		foamCount = count;
+		hostDiffuseView.get(0, nextFoam, 0, count * 4);
+		nextFoamCount = count;
 	}
 
+	/** Removes all water but keeps the GPU resources for reuse. */
 	public void clearParticles() {
+		awaitStep();
 		activeCount = 0;
 		foamCount = 0;
 		buffer.setNbActiveParticles(0);
@@ -800,6 +874,12 @@ public final class FluidSimulation implements AutoCloseable {
 
 	@Override
 	public void close() {
+		try {
+			awaitStep();
+		} catch (RuntimeException e) {
+			io.github.isnowx17.inertia.Inertia.LOGGER.warn("Physics step failed while closing", e);
+		}
+		stepper.shutdown();
 		playerBody.close();
 		terrain.close();
 		particleSystem.removeParticleBuffer(buffer);

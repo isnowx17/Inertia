@@ -56,7 +56,7 @@ public final class FluidSurfaceRenderer {
 	private static final int SKY_REFLECTION = 0xD6E8FF;
 	private static final int FOAM_COLOR = 0xF4FAFF;
 	/** Speed (blocks/second) at which the surface itself is tinted fully white. */
-	private static final float SURFACE_FOAM_SPEED = 9f;
+	private static final float SURFACE_FOAM_SPEED = 6f;
 	/** Spray droplets are drawn smaller than full particles. */
 	private static final float DROPLET_SCALE = 0.55f;
 	/** Never move geometry further ahead than this, in seconds (e.g. after a hitch). */
@@ -70,6 +70,14 @@ public final class FluidSurfaceRenderer {
 	private static final float SHALLOW_OPACITY = 0.12f;
 	/** Isolated particles slower than this (blocks/second) are not drawn as droplets. */
 	private static final float MIN_DROPLET_SPEED = 1.0f;
+	/** Floats per collected foam particle: position, flow velocity, lifetime, type. */
+	private static final int FOAM_STRIDE = 8;
+	private static final float FOAM_SURFACE = 0f;
+	private static final float FOAM_SPRAY = 1f;
+	/** Spray is drawn where the field density is at least this fraction of the threshold (close to water). */
+	private static final float SPRAY_MIN_DENSITY = 0.01f;
+	/** Size of spray flecks relative to the foam size. */
+	private static final float SPRAY_SCALE = 0.45f;
 	/** Foam is drawn where the field density is within this band around the surface threshold. */
 	private static final float FOAM_MIN_DENSITY = 0.15f;
 	private static final float FOAM_MAX_DENSITY = 1.6f;
@@ -89,6 +97,9 @@ public final class FluidSurfaceRenderer {
 		return thread;
 	});
 	private final AtomicBoolean busy = new AtomicBoolean();
+	private long lastMeshStart;
+	/** At most 40 surface rebuilds per second. */
+	private static final long MIN_MESH_INTERVAL_NANOS = 25_000_000L;
 
 	// Job input, only written while no job is running.
 	private float[] inputPositions = new float[0];
@@ -215,9 +226,16 @@ public final class FluidSurfaceRenderer {
 	// ------------------------------------------------------------------------------------------
 
 	private void startMeshing(FluidSimulation sim, float partialTick) {
+		// The surface follows the flow between rebuilds, so rebuilding faster than this only takes CPU
+		// time away from the rest of the game.
+		long now = System.nanoTime();
+		if (now - lastMeshStart < MIN_MESH_INTERVAL_NANOS) {
+			return;
+		}
 		if (!busy.compareAndSet(false, true)) {
 			return;
 		}
+		lastMeshStart = now;
 
 		InertiaConfig config = manager.config();
 		float spacing = sim.params().spacing();
@@ -313,10 +331,11 @@ public final class FluidSurfaceRenderer {
 	private void collectFoam(FluidSurfaceMesher mesher, float[] foam, int count, Result target) {
 		int stride = Math.max(1, (count + MAX_FOAM_DRAWN - 1) / MAX_FOAM_DRAWN);
 		int drawn = (count + stride - 1) / stride;
-		if (target.foam.length < drawn * 7) {
-			target.foam = new float[drawn * 7];
+		if (target.foam.length < drawn * FOAM_STRIDE) {
+			target.foam = new float[drawn * FOAM_STRIDE];
 		}
 		float[] v = velocityScratch;
+		float sprayDensity = mesher.threshold() * SPRAY_MIN_DENSITY;
 		float minDensity = mesher.threshold() * FOAM_MIN_DENSITY;
 		float maxDensity = mesher.threshold() * FOAM_MAX_DENSITY;
 		int n = 0;
@@ -328,14 +347,19 @@ public final class FluidSurfaceRenderer {
 			if (!Float.isFinite(x) || !Float.isFinite(y) || !Float.isFinite(z) || life <= 0f) {
 				continue;
 			}
-			// Only foam floating in the surface band of the water: spray flying through the air and
-			// bubbles deep inside the water are not drawn as foam.
+			// In the surface band of the water: foam lying on the surface. Just outside the water:
+			// spray. Deep inside (bubbles) or far from any water: not drawn.
 			float density = mesher.densityAt(x, y, z);
-			if (density < minDensity || density > maxDensity) {
+			float type;
+			if (density >= minDensity && density <= maxDensity) {
+				type = FOAM_SURFACE;
+			} else if (density >= sprayDensity && density < minDensity) {
+				type = FOAM_SPRAY;
+			} else {
 				continue;
 			}
 			mesher.velocityAt(x, y, z, v);
-			int o = n * 7;
+			int o = n * FOAM_STRIDE;
 			target.foam[o] = x;
 			target.foam[o + 1] = y;
 			target.foam[o + 2] = z;
@@ -343,6 +367,7 @@ public final class FluidSurfaceRenderer {
 			target.foam[o + 4] = v[1];
 			target.foam[o + 5] = v[2];
 			target.foam[o + 6] = life;
+			target.foam[o + 7] = type;
 			n++;
 		}
 		target.foamCount = n;
@@ -405,7 +430,7 @@ public final class FluidSurfaceRenderer {
 
 			float speed = Mth.sqrt(vx * vx + vy * vy + vz * vz);
 			float churn = Mth.clamp(speed / SURFACE_FOAM_SPEED, 0f, 1f);
-			foam[i] = churn * 0.6f;
+			foam[i] = churn * 0.9f;
 			thickness[i] = v[o + 9];
 
 			if (forShader) {
@@ -675,8 +700,9 @@ public final class FluidSurfaceRenderer {
 	}
 
 	/**
-	 * Foam is drawn as soft streaks: each particle becomes a quad facing the camera whose long axis
-	 * follows the flow (as seen from the camera) and whose length grows with the flow speed.
+	 * Foam on the surface is drawn as thin streaks lying flat on the water, stretched along the
+	 * horizontal flow: carried by the current they line up into the white foam lines of moving
+	 * water. Spray just above the water is drawn as small camera-facing flecks.
 	 */
 	private QuadBatch prepareFoam(ClientLevel level, Result result, Vec3 cam, float dt, float size, float pull) {
 		int count = result.foamCount;
@@ -685,7 +711,6 @@ public final class FluidSurfaceRenderer {
 		float offY = (float) (result.originY - cam.y);
 		float offZ = (float) (result.originZ - cam.z);
 
-		// Four corners per particle, computed here so the deferred draw only copies.
 		float[] corners = new float[count * 12];
 		int[] colors = new int[count];
 		int[] lights = new int[count];
@@ -694,11 +719,12 @@ public final class FluidSurfaceRenderer {
 		int drawn = 0;
 
 		for (int i = 0; i < count; i++) {
-			int o = i * 7;
+			int o = i * FOAM_STRIDE;
 			float vx = f[o + 3];
 			float vy = f[o + 4];
 			float vz = f[o + 5];
 			float life = f[o + 6] - dt;
+			boolean spray = f[o + 7] == FOAM_SPRAY;
 			if (life <= 0f) {
 				continue;
 			}
@@ -709,7 +735,6 @@ public final class FluidSurfaceRenderer {
 			float py = ly + offY;
 			float pz = lz + offZ;
 
-			// View direction from the camera to the particle.
 			float dist = Mth.sqrt(px * px + py * py + pz * pz);
 			if (dist < 1e-3f) {
 				continue;
@@ -717,44 +742,69 @@ public final class FluidSurfaceRenderer {
 			float ex = px / dist;
 			float ey = py / dist;
 			float ez = pz / dist;
+			// Pull towards the camera so foam floating just below the shader water stays visible.
 			float shift = Math.min(pull, dist * 0.5f);
 			px -= ex * shift;
 			py -= ey * shift;
 			pz -= ez * shift;
 
-			// Flow projected onto the screen plane gives the streak direction.
-			float along = vx * ex + vy * ey + vz * ez;
-			float ax = vx - along * ex;
-			float ay = vy - along * ey;
-			float az = vz - along * ez;
-			float speed = Mth.sqrt(ax * ax + ay * ay + az * az);
-			if (speed < 1e-3f) {
-				// Still water: an arbitrary direction in the screen plane gives a round blob.
+			float ax;
+			float ay;
+			float az;
+			float bx;
+			float by;
+			float bz;
+			float nx;
+			float ny;
+			float nz;
+			if (spray) {
+				// Small round fleck facing the camera; (a x e) winds it front-facing.
+				float half = size * SPRAY_SCALE;
 				ax = ez;
 				ay = 0f;
 				az = -ex;
-				speed = Mth.sqrt(ax * ax + az * az);
-				if (speed < 1e-3f) {
+				float alen = Mth.sqrt(ax * ax + az * az);
+				if (alen < 1e-3f) {
 					ax = 1f;
+					alen = 1f;
+				}
+				ax = ax / alen * half;
+				az = az / alen * half;
+				bx = ay * ez - az * ey;
+				by = az * ex - ax * ez;
+				bz = ax * ey - ay * ex;
+				float blen = Mth.sqrt(bx * bx + by * by + bz * bz);
+				bx = bx / blen * half;
+				by = by / blen * half;
+				bz = bz / blen * half;
+				nx = -ex;
+				ny = -ey;
+				nz = -ez;
+			} else {
+				// Flat streak on the water, along the horizontal flow. Still water gets a slowly varying
+				// direction from its position so the foam does not all line up.
+				float hx = vx;
+				float hz = vz;
+				float speed = Mth.sqrt(hx * hx + hz * hz);
+				if (speed < 0.05f) {
+					float angle = (Mth.sin(lx * 0.73f + lz * 0.41f) + Mth.cos(lz * 0.67f - lx * 0.29f)) * Mth.PI;
+					hx = Mth.cos(angle);
+					hz = Mth.sin(angle);
 					speed = 1f;
 				}
+				float halfLength = size * (1.2f + Math.min(speed * 0.6f, 4f));
+				float halfWidth = size * 0.35f;
+				ax = hx / speed * halfLength;
+				ay = 0f;
+				az = hz / speed * halfLength;
+				// b = up x a: with this corner order the quad faces up (front-facing from above).
+				bx = az / halfLength * halfWidth;
+				by = 0f;
+				bz = -ax / halfLength * halfWidth;
+				nx = 0f;
+				ny = 1f;
+				nz = 0f;
 			}
-			float halfLength = size * (1f + Math.min(speed * 0.35f, 3f));
-			ax = ax / speed * halfLength;
-			ay = ay / speed * halfLength;
-			az = az / speed * halfLength;
-
-			// Width axis: perpendicular to the streak and the view direction. The order (a x e) makes
-			// the quad wind counter-clockwise on screen, i.e. front-facing: the entity shader lights
-			// back faces with the inverted normal, which made foam drawn this way grey.
-			float bx = ay * ez - az * ey;
-			float by = az * ex - ax * ez;
-			float bz = ax * ey - ay * ex;
-			float blen = Mth.sqrt(bx * bx + by * by + bz * bz);
-			float halfWidth = size * 0.6f;
-			bx = bx / blen * halfWidth;
-			by = by / blen * halfWidth;
-			bz = bz / blen * halfWidth;
 
 			int c = drawn * 12;
 			corners[c] = px - ax - bx;
@@ -769,13 +819,12 @@ public final class FluidSurfaceRenderer {
 			corners[c + 9] = px - ax + bx;
 			corners[c + 10] = py - ay + by;
 			corners[c + 11] = pz - az + bz;
-			// Foam floats on the water: light it like an upward-facing surface so it stays white.
-			normals[drawn * 3] = 0f;
-			normals[drawn * 3 + 1] = 1f;
-			normals[drawn * 3 + 2] = 0f;
+			normals[drawn * 3] = nx;
+			normals[drawn * 3 + 1] = ny;
+			normals[drawn * 3 + 2] = nz;
 
 			float fade = Mth.clamp(life / FOAM_FADE, 0f, 1f);
-			int alpha = Mth.clamp(Math.round(fade * 190f), 0, 255);
+			int alpha = Mth.clamp(Math.round(fade * (spray ? 230f : 215f)), 0, 255);
 			colors[drawn] = (alpha << 24) | FOAM_COLOR;
 			lights[drawn] = light(level, block,
 				Mth.floor(lx) + result.originX, Mth.floor(ly + LIGHT_PROBE_OFFSET) + result.originY, Mth.floor(lz) + result.originZ);
