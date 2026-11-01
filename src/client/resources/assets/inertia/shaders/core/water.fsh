@@ -76,12 +76,12 @@ vec2 rippleSlope(vec2 p, float t) {
         vec2 dir = waves[i].xy;
         float k = waves[i].z;
         float phase = dot(dir, p) * k + t * sqrt(9.81 * k) * 0.6;
-        slope += dir * cos(phase) * (0.06 / k) * k;
+        slope += dir * cos(phase) * 0.11;
     }
     // ...plus drifting noise so the pattern never visibly repeats.
     vec3 n1 = noised(p * 2.3 + vec2(t * 0.31, t * 0.17));
     vec3 n2 = noised(p * 5.1 - vec2(t * 0.23, -t * 0.29));
-    slope += n1.yz * 0.08 + n2.yz * 0.035;
+    slope += n1.yz * 0.16 + n2.yz * 0.07;
     return slope;
 }
 
@@ -112,8 +112,10 @@ void main() {
     vec2 screenUv = gl_FragCoord.xy / ScreenSize;
     float waterDepth = viewDepth(gl_FragCoord.z);
 
-    // Refraction: offset the lookup by the ripple slope, but never sample things in front of the water.
-    vec2 offset = slope * refractionStrength / max(waterDepth, 1.0) * 4.0;
+    // Refraction: bend the lookup by the tilt of the surface (the simulated waves of the mesh plus the
+    // ripples), but never sample things in front of the water.
+    // The horizontal part of the normal is zero on still, flat water, so only waves bend the image.
+    vec2 offset = rippled.xz * refractionStrength * 6.0 / max(waterDepth, 1.0);
     vec2 refractedUv = clamp(screenUv + offset, vec2(0.001), vec2(0.999));
     float sceneDepth = viewDepth(texture(SceneDepth, refractedUv).r);
     if (sceneDepth < waterDepth) {
@@ -142,7 +144,13 @@ void main() {
     float sun = pow(max(dot(reflected, sunDirection), 0.0), 380.0) * 6.0 + pow(max(dot(reflected, sunDirection), 0.0), 40.0) * 0.25;
     vec3 sunColor = vec3(1.0, 0.95, 0.85) * sun * daylight * lightMapColor.g;
 
-    vec3 color = mix(body, skyColor, fresnel) + sunColor;
+    // Sun-facing sides of the waves are brighter, the far sides darker: this is what makes the shape of
+    // the water readable when looking down into it.
+    float facing = dot(rippled, sunDirection) * 0.5 + 0.5;
+    float waveLight = mix(0.78, 1.18, facing * daylight + (1.0 - daylight) * 0.5);
+    body *= waveLight;
+
+    vec3 color = mix(body, skyColor, max(fresnel, 0.06)) + sunColor;
 
     // Foam: churned water turns white, broken up by noise.
     float foamNoise = noised(worldPosition.xz * 6.0 + vec2(time * 0.5)).x;
