@@ -44,8 +44,18 @@ bucket are unchanged. The water is not saved: it disappears when you leave the w
 | `despawnDistance` | 96 | Water further away from you than this is removed. |
 | `substepsPerTick` | 3 | Simulation steps per game tick; higher is more stable but slower. |
 | `playerInteraction` | true | Whether water pushes, slows and lifts the player. |
-| `renderScale` | 1.6 | Size of rendered particles relative to the spacing. |
-| `renderOpacity` | 0.6 | Opacity of the rendered water. |
+| `renderMode` | `surface` | `surface`: one continuous water surface. `particles`: every particle as a sphere. |
+| `surfaceResolution` | 1.5 | Surface grid size relative to the spacing; smaller is more detailed but slower. |
+| `surfaceSmoothness` | 3.0 | Surface smoothing radius relative to the spacing. |
+| `surfaceThreshold` | 0.3 | Surface level as a fraction of still-water density. |
+| `renderScale` | 1.6 | Size of particles / spray droplets relative to the spacing. |
+| `renderOpacity` | 0.6 | Opacity of the water when looking straight into it. |
+| `waterFriction` | 0.3 | Friction against blocks; higher makes water pool instead of sliding away. |
+| `waterDamping` | 0.05 | Velocity damping. |
+| `waterViscosity` | 0.01 | Viscosity; very high values feel like honey. |
+| `waterSurfaceTension` | 0.002 | Surface tension; high values make thin water bead up. |
+| `waterCohesion` | 0.02 | Cohesion; high values make thin water bead up. |
+| `waterVorticity` | 4 | Keeps swirls alive. |
 
 With the defaults about 128 blocks of water can exist at the same time.
 
@@ -73,8 +83,10 @@ is verified during the build.
   Full blocks are greedily merged into large boxes, partial blocks use their collision boxes.
 - **Player:** a kinematic box keeps the water out of the player; the force of the water on the
   player is computed from the particles around them.
-- **Rendering:** particles are drawn as shaded, camera-facing sprites, interpolated between
-  simulation ticks.
+- **Rendering:** a background thread builds one continuous water surface from the particles
+  (surface nets over a smoothed particle density field) as often as it can; the render thread
+  always draws the newest surface, shaded with Fresnel reflection, biome colour, block light and
+  foam. Isolated splashes are drawn as small droplets.
 
 See [PLAN.md](PLAN.md) for scope and versioning, and [CHANGELOG.md](CHANGELOG.md) for changes.
 

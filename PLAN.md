@@ -36,7 +36,7 @@ Bu belge, projenin ilk sürümünün (v0.1.0) kapsamını ve kararlarını tanı
 3. **GPU sıvı simülasyonu:** Akma, sıçrama, birikme, yüzey gerilimi, viskozite.
 4. **Bloklarla çarpışma:** Sıvının yakınındaki bloklardan çarpışma şekilleri üretilir; blok kırılıp konunca güncellenir.
 5. **Oyuncu etkileşimi:** Sıvı oyuncunun etrafından akar, oyuncuyu iter ve yavaşlatır.
-6. **Çizim:** v0.1.0'da parçacıklar ışıklandırılmış, kameraya dönük küre görünümlü sprite'lar olarak çizilir (biyom su rengi, blok ışığı, hızlı suda köpük tonu, tick'ler arası interpolasyon). Birleşik, pürüzsüz yüzey çizimi (screen-space fluid rendering) sonraki bir sürüme bırakıldı.
+6. **Çizim:** Parçacıklardan arka planda tek parça, pürüzsüz bir su yüzeyi (mesh) üretilir ve çizilir (0.1.1'den itibaren; 0.1.0'da parçacıklar tek tek top olarak çiziliyordu). Fresnel yansıması, biyom su rengi, blok ışığı ve hızlı suda köpük vardır; tek kalan sıçrama parçacıkları küçük damlacık olarak çizilir. Ayardan parçacık görünümüne geçilebilir.
 7. **Ayarlar:** Toplam parçacık limiti, kalite, sıvının silinme mesafesi.
 8. **Altyapı:** Gradle projesi, GitHub Actions CI, README, CHANGELOG.
 9. **Test komutları:** `/inertia info` (GPU ve simülasyon durumu), `/inertia clear` (tüm suyu siler).

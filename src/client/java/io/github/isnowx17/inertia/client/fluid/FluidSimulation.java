@@ -103,12 +103,19 @@ public final class FluidSimulation implements AutoCloseable {
 		this.scene = createScene();
 
 		try (MemoryStack mem = MemoryStack.stackPush()) {
-			// Water material, values from NVIDIA's PBF snippet.
-			material = PhysXRuntime.physics().createPBDMaterial(0.05f, 0.05f, 0f, 0.001f, 0.5f, 0.005f, 0.01f, 0f, 0f);
-			material.setViscosity(0.001f);
-			material.setSurfaceTension(0.00704f);
-			material.setCohesion(0.0704f);
-			material.setVorticityConfinement(10f);
+			// Water material. Low cohesion and surface tension keep thin water as one sheet instead of
+			// beads; friction and a little viscosity make it slow down and pool.
+			material = PhysXRuntime.physics().createPBDMaterial(
+				config.waterFriction,      // friction
+				config.waterDamping,       // damping
+				0f,                        // adhesion
+				config.waterViscosity,     // viscosity
+				config.waterVorticity,     // vorticity confinement
+				config.waterSurfaceTension,// surface tension
+				config.waterCohesion,      // cohesion
+				0f,                        // lift
+				0f                         // drag
+			);
 
 			particleSystem = PhysXRuntime.physics().createPBDParticleSystem(cuda, 96);
 			particleSystem.setRestOffset(params.restOffset());
