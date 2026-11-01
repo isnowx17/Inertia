@@ -125,8 +125,8 @@ jars, creates the tag `v<version>` and publishes the release.
   sky reflection and a sun glint. It is registered as an optional pipeline, so a
   compile failure only switches back to the simple rendering.
 - **Foam:** PhysX diffuse particles (foam, spray, bubbles) spawn where the water splashes or
-  churns; surface foam is drawn as thin streaks lying on the water along the current, spray as
-  small flecks.
+  churns. They are spread over the surface mesh as a foam layer that the water shader draws as
+  marbled white foam drifting with the current; spray is drawn as small soft flecks.
 - **Threads:** the GPU step runs on a physics thread, the surface is meshed on a worker pool, and
   the game thread only collects results and draws.
 

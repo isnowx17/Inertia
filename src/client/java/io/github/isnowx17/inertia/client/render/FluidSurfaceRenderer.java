@@ -51,14 +51,14 @@ import org.joml.Vector3f;
  */
 public final class FluidSurfaceRenderer {
 	private static final Identifier SURFACE_TEXTURE = Inertia.id("textures/fluid/surface.png");
-	private static final Identifier DROPLET_TEXTURE = Inertia.id("textures/fluid/particle.png");
+	private static final Identifier DROPLET_TEXTURE = Inertia.id("textures/fluid/spray.png");
 	private static final Identifier FOAM_TEXTURE = Inertia.id("textures/fluid/foam.png");
 	private static final int SKY_REFLECTION = 0xD6E8FF;
 	private static final int FOAM_COLOR = 0xF4FAFF;
 	/** Speed (blocks/second) at which the surface itself is tinted fully white. */
 	private static final float SURFACE_FOAM_SPEED = 6f;
 	/** Spray droplets are drawn smaller than full particles. */
-	private static final float DROPLET_SCALE = 0.55f;
+	private static final float DROPLET_SCALE = 0.35f;
 	/** Never move geometry further ahead than this, in seconds (e.g. after a hitch). */
 	private static final float MAX_EXTRAPOLATION = 0.15f;
 	/** Foam particles drawn at most per frame; beyond this every n-th particle is drawn. */
@@ -203,7 +203,8 @@ public final class FluidSurfaceRenderer {
 			float size = result.spacing * config.renderScale * 0.45f * config.foamSize;
 			// With the shader the water surface is in the depth buffer when foam is drawn; pull the foam
 			// slightly towards the camera so foam floating just below the surface stays visible.
-			foam = prepareFoam(level, result, cam, foamDt, size, shader ? FOAM_DEPTH_PULL : 0f);
+			// With the shader, foam on the surface is drawn by the water itself; only spray stays separate.
+			foam = prepareFoam(level, result, cam, foamDt, size, shader ? FOAM_DEPTH_PULL : 0f, !shader);
 		}
 
 		if (shader) {
@@ -275,7 +276,7 @@ public final class FluidSurfaceRenderer {
 		try {
 			worker.execute(() -> {
 				try {
-					job.mesh(positions, velocities, count, target.mesh);
+					job.mesh(positions, velocities, count, foamInput, foamCount, target.mesh);
 					collectDroplets(job, positions, velocities, count, target);
 					collectFoam(job, foamInput, foamCount, target);
 					latest = target;
@@ -430,7 +431,8 @@ public final class FluidSurfaceRenderer {
 
 			float speed = Mth.sqrt(vx * vx + vy * vy + vz * vz);
 			float churn = Mth.clamp(speed / SURFACE_FOAM_SPEED, 0f, 1f);
-			foam[i] = churn * 0.9f;
+			float surfaceFoam = v[o + 10];
+			foam[i] = Mth.clamp(surfaceFoam + churn * 0.4f, 0f, 1f);
 			thickness[i] = v[o + 9];
 
 			if (forShader) {
@@ -447,7 +449,7 @@ public final class FluidSurfaceRenderer {
 				float fresnel = 0.04f + 0.96f * pow5(1f - cos);
 
 				int rgb = lerpRgb(body, SKY_REFLECTION, fresnel * 0.7f);
-				rgb = lerpRgb(rgb, FOAM_COLOR, churn * 0.5f);
+				rgb = lerpRgb(rgb, FOAM_COLOR, Math.max(churn * 0.5f, surfaceFoam * 0.85f));
 				float alpha = bodyAlpha + (1f - bodyAlpha) * Math.max(fresnel, churn * 0.4f);
 				colors[i] = (Mth.clamp(Math.round(alpha * 255f), 0, 255) << 24) | rgb;
 			}
@@ -539,7 +541,8 @@ public final class FluidSurfaceRenderer {
 				overlays.add(new WaterPass.Overlay(dropletMesh.vertexBuffer(), dropletMesh.drawState().indexCount(), DROPLET_TEXTURE));
 			}
 			if (foamMesh != null) {
-				overlays.add(new WaterPass.Overlay(foamMesh.vertexBuffer(), foamMesh.drawState().indexCount(), FOAM_TEXTURE));
+				// In the shader path this batch only holds spray (surface foam is part of the water).
+				overlays.add(new WaterPass.Overlay(foamMesh.vertexBuffer(), foamMesh.drawState().indexCount(), DROPLET_TEXTURE));
 			}
 
 			InertiaConfig config = manager.config();
@@ -661,8 +664,8 @@ public final class FluidSurfaceRenderer {
 		Vector3f right = q.transform(new Vector3f(radius, 0, 0));
 		Vector3f up = q.transform(new Vector3f(0, radius, 0));
 		Vector3f normal = q.transform(new Vector3f(0, 0, 1));
-		int alpha = Mth.clamp(Math.round(opacity * 255f), 40, 255);
-		int color = (alpha << 24) | lerpRgb(waterColor, FOAM_COLOR, 0.35f);
+		int alpha = 150;
+		int color = (alpha << 24) | lerpRgb(waterColor, FOAM_COLOR, 0.8f);
 
 		float[] corners = new float[count * 12];
 		int[] colors = new int[count];
@@ -704,7 +707,7 @@ public final class FluidSurfaceRenderer {
 	 * horizontal flow: carried by the current they line up into the white foam lines of moving
 	 * water. Spray just above the water is drawn as small camera-facing flecks.
 	 */
-	private QuadBatch prepareFoam(ClientLevel level, Result result, Vec3 cam, float dt, float size, float pull) {
+	private QuadBatch prepareFoam(ClientLevel level, Result result, Vec3 cam, float dt, float size, float pull, boolean includeSurface) {
 		int count = result.foamCount;
 		float[] f = result.foam;
 		float offX = (float) (result.originX - cam.x);
@@ -725,7 +728,7 @@ public final class FluidSurfaceRenderer {
 			float vz = f[o + 5];
 			float life = f[o + 6] - dt;
 			boolean spray = f[o + 7] == FOAM_SPRAY;
-			if (life <= 0f) {
+			if (life <= 0f || (!spray && !includeSurface)) {
 				continue;
 			}
 			float lx = f[o] + vx * dt;
@@ -792,8 +795,8 @@ public final class FluidSurfaceRenderer {
 					hz = Mth.sin(angle);
 					speed = 1f;
 				}
-				float halfLength = size * (1.2f + Math.min(speed * 0.6f, 4f));
-				float halfWidth = size * 0.35f;
+				float halfLength = size * (1.0f + Math.min(speed * 0.2f, 1.0f));
+				float halfWidth = size * 0.6f;
 				ax = hx / speed * halfLength;
 				ay = 0f;
 				az = hz / speed * halfLength;

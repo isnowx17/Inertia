@@ -3,6 +3,16 @@
 All notable changes to Inertia are documented here. Versioning rules are described in
 [PLAN.md](PLAN.md#5-sürümleme).
 
+## [0.4.1] — Beta
+
+### Fixed
+- Foam no longer looks like white needles. With the water shader, foam is now part of the water
+  surface: the foam particles PhysX produces are spread over the surface mesh (a foam channel in
+  the surface grid) and the shader draws them as a marbled white foam layer that drifts with the
+  current. In the simple rendering, foam streaks are shorter and wider and the surface itself is
+  tinted white where foam floats.
+- Spray and droplets are drawn as small soft white flecks instead of blue balls.
+
 ## [0.4.0] — Beta
 
 ### Changed
