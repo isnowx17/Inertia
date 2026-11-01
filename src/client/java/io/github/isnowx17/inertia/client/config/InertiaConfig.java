@@ -21,7 +21,7 @@ public final class InertiaConfig {
 	public static final String RENDER_SURFACE = "surface";
 	public static final String RENDER_PARTICLES = "particles";
 	public static final String QUALITY_CUSTOM = "custom";
-	private static final int CURRENT_VERSION = 4;
+	private static final int CURRENT_VERSION = 5;
 
 	/** Version of this file's defaults; older files get changed defaults migrated on load. */
 	public int configVersion = 0;
@@ -115,10 +115,10 @@ public final class InertiaConfig {
 	public boolean foam = true;
 
 	/** How easily foam forms, 0..1. */
-	public float foamAmount = 0.5f;
+	public float foamAmount = 0.35f;
 
 	/** How long foam lives in seconds. Longer-lived foam is stretched into longer streaks by the flow. */
-	public float foamLifetime = 4.0f;
+	public float foamLifetime = 3.0f;
 
 	/** Size of the foam streaks relative to the default. */
 	public float foamSize = 1.0f;
@@ -210,6 +210,15 @@ public final class InertiaConfig {
 				foamLifetime = 4.0f;
 			}
 		}
+		if (configVersion < 5) {
+			// 0.4.2: foam is part of the surface now and needs fewer particles.
+			if (foamAmount == 0.5f || foamAmount == 0.4f) {
+				foamAmount = 0.35f;
+			}
+			if (foamLifetime == 4.0f || foamLifetime == 2.5f) {
+				foamLifetime = 3.0f;
+			}
+		}
 		configVersion = CURRENT_VERSION;
 	}
 
@@ -239,8 +248,8 @@ public final class InertiaConfig {
 		sunStrength = clamp(orDefault(sunStrength, 1f), 0f, 3f);
 		refractionStrength = clamp(orDefault(refractionStrength, 1f), 0f, 3f);
 		waterAbsorption = clamp(orDefault(waterAbsorption, 1f), 0.1f, 5f);
-		foamAmount = clamp(orDefault(foamAmount, 0.5f), 0f, 1f);
-		foamLifetime = clamp(orDefault(foamLifetime, 4f), 0.2f, 10f);
+		foamAmount = clamp(orDefault(foamAmount, 0.35f), 0f, 1f);
+		foamLifetime = clamp(orDefault(foamLifetime, 3f), 0.2f, 10f);
 		foamSize = clamp(orDefault(foamSize, 1f), 0.25f, 4f);
 		waterFriction = clamp(orDefault(waterFriction, 0.3f), 0f, 1f);
 		waterDamping = clamp(orDefault(waterDamping, 0.05f), 0f, 1f);

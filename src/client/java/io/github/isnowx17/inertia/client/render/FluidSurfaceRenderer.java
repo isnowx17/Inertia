@@ -432,7 +432,7 @@ public final class FluidSurfaceRenderer {
 			float speed = Mth.sqrt(vx * vx + vy * vy + vz * vz);
 			float churn = Mth.clamp(speed / SURFACE_FOAM_SPEED, 0f, 1f);
 			float surfaceFoam = v[o + 10];
-			foam[i] = Mth.clamp(surfaceFoam + churn * 0.4f, 0f, 1f);
+			foam[i] = Mth.clamp(surfaceFoam + churn * 0.3f, 0f, 1f);
 			thickness[i] = v[o + 9];
 
 			if (forShader) {

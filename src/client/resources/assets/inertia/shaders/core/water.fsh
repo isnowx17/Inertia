@@ -248,10 +248,12 @@ void main() {
     vec3 color = mix(body, reflectionColor, fresnel) + sunColor;
 
     // Foam: churned, fast-moving water gets a marbled web of white foam lines.
+    // The amount of foam decides how many of the web's lines show, never a solid white sheet.
     float web = causticLayer(worldPosition.xz * 1.1 + vec2(time * 0.05, -time * 0.04), time * 0.35);
-    float churn = clamp(foam * 1.4, 0.0, 1.0);
-    float foamAmount = churn * smoothstep(0.12, 0.55, web + churn * 0.35);
-    color = mix(color, vec3(0.95, 0.97, 1.0) * diffuseLight * lightMapColor.rgb, foamAmount * 0.85);
+    float churn = clamp(foam, 0.0, 1.0);
+    float lines = smoothstep(0.55 - churn * 0.35, 0.75 - churn * 0.25, web);
+    float foamAmount = lines * smoothstep(0.02, 0.35, churn);
+    color = mix(color, vec3(0.95, 0.97, 1.0) * diffuseLight * lightMapColor.rgb, foamAmount * 0.75);
 
     // Soft shoreline: very thin water fades into the ground instead of ending in a hard edge.
     float edge = smoothstep(0.0, TextureMat[1].w, distanceInWater + fresnel * 0.2 + foamAmount);

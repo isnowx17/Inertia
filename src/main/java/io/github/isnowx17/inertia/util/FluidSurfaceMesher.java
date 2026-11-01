@@ -43,9 +43,11 @@ public final class FluidSurfaceMesher {
 	private static final int FOAM_CHANNEL = 4;
 	/** Foam particles count when the field density there is within this band around the threshold. */
 	private static final float FOAM_BAND_MIN = 0.15f;
-	private static final float FOAM_BAND_MAX = 2.5f;
+	/** Foam floats among the top particles, inside the drawn surface (about twice the threshold);
+	 * bubbles deep in the water sit near the still-water density (over three times the threshold). */
+	private static final float FOAM_BAND_MAX = 2.0f;
 	/** Converts the splatted foam weight around a vertex into a 0..1 foam amount. */
-	private static final float FOAM_GAIN = 1.5f;
+	private static final float FOAM_GAIN = 0.6f;
 	/** Foam fades out over the last this many seconds of its life. */
 	private static final float FOAM_FADE_SECONDS = 0.8f;
 	private static final int PAD = BRICK + 1;

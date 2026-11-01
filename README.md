@@ -62,8 +62,8 @@ bucket are unchanged. The water is not saved: it disappears when you leave the w
 | `renderScale` | 1.6 | Size of spray droplets and foam relative to the particle spacing. |
 | `renderOpacity` | 0.6 | Opacity of the water when looking straight into it. |
 | `foam` | true | Simulate and draw foam, spray and bubbles. |
-| `foamAmount` | 0.5 | How easily foam forms, 0–1. |
-| `foamLifetime` | 4.0 | Seconds foam lives; longer-lived foam forms longer streaks. |
+| `foamAmount` | 0.35 | How easily foam forms, 0–1. |
+| `foamLifetime` | 3.0 | Seconds foam lives; longer-lived foam forms longer streaks. |
 | `foamSize` | 1.0 | Size of the foam streaks. |
 | `waterFriction` | 0.3 | Friction against blocks; higher makes water pool instead of sliding away. |
 | `waterDamping` | 0.05 | Velocity damping. |
