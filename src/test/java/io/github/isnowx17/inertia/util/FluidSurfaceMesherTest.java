@@ -84,6 +84,16 @@ class FluidSurfaceMesherTest {
 			}
 		}
 		assertTrue(top > 0);
+
+		// Seen from the top, the water behind the surface is about one block deep.
+		for (int v = 0; v < mesh.vertexCount; v++) {
+			float x = vx(mesh, v);
+			float z = vz(mesh, v);
+			if (x > 0.3f && x < 0.7f && z > 0.3f && z < 0.7f && vy(mesh, v) > 0.5f) {
+				float thickness = mesh.vertices[v * FluidSurfaceMesher.VERTEX_STRIDE + 9];
+				assertTrue(thickness > 0.7f && thickness < 1.3f, "thickness " + thickness);
+			}
+		}
 	}
 
 	@Test

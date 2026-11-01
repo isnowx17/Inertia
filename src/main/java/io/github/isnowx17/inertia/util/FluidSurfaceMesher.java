@@ -28,8 +28,10 @@ import java.util.stream.IntStream;
  * Instances are not thread-safe: one {@link #mesh} call at a time.
  */
 public final class FluidSurfaceMesher {
-	/** Floats per output vertex: x, y, z, nx, ny, nz, vx, vy, vz. */
-	public static final int VERTEX_STRIDE = 9;
+	/** Floats per output vertex: x, y, z, nx, ny, nz, vx, vy, vz, thickness. */
+	public static final int VERTEX_STRIDE = 10;
+	/** Water thickness is measured at most this many cells into the water. */
+	private static final int MAX_THICKNESS_STEPS = 48;
 
 	private static final int BRICK_BITS = 4;
 	private static final int BRICK = 1 << BRICK_BITS;
@@ -656,7 +658,28 @@ public final class FluidSurfaceMesher {
 		v[o + 6] = vx;
 		v[o + 7] = vy;
 		v[o + 8] = vz;
+		v[o + 9] = thickness(v[o], v[o + 1], v[o + 2], nx, ny, nz);
 		return index;
+	}
+
+	/**
+	 * How far the water extends behind a surface point, measured from the point into the water
+	 * (against the normal) until the field drops below the threshold. On a pool surface this is the
+	 * depth of the water; it drives depth-dependent colour and transparency.
+	 */
+	private float thickness(float x, float y, float z, float nx, float ny, float nz) {
+		float step = cellSize;
+		int steps = 0;
+		float px = x - nx * step * 0.5f;
+		float py = y - ny * step * 0.5f;
+		float pz = z - nz * step * 0.5f;
+		while (steps < MAX_THICKNESS_STEPS && densityAt(px, py, pz) > threshold) {
+			px -= nx * step;
+			py -= ny * step;
+			pz -= nz * step;
+			steps++;
+		}
+		return steps * step;
 	}
 
 	/**

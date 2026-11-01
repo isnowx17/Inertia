@@ -24,6 +24,7 @@ public final class FluidManager {
 	private boolean failed;
 	private boolean warnedThisSession;
 	private double playerSubmersion;
+	private java.util.function.Supplier<String> waterShaderStatus = () -> "off";
 
 	public FluidManager(InertiaConfig config) {
 		this.config = config;
@@ -35,6 +36,15 @@ public final class FluidManager {
 
 	public InertiaConfig config() {
 		return config;
+	}
+
+	public void setWaterShaderStatus(java.util.function.Supplier<String> status) {
+		this.waterShaderStatus = status;
+	}
+
+	/** Water shader state for /inertia info. */
+	public String waterShaderStatus() {
+		return config.waterShader ? waterShaderStatus.get() : "off";
 	}
 
 	public double playerSubmersion() {

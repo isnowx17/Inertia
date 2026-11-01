@@ -39,9 +39,13 @@ bucket are unchanged. The water is not saved: it disappears when you leave the w
 
 | Setting | Default | Meaning |
 |---|---|---|
-| `quality` | `medium` | `low`, `medium`, `high`, `ultra` or `custom`; see below. |
+| `quality` | `high` | `low`, `medium`, `high`, `ultra` or `custom`; see below. |
 | `despawnDistance` | 96 | Water further away from you than this is removed. |
 | `playerInteraction` | true | Whether water pushes, slows and lifts the player. |
+| `waterShader` | true | Draw the water with Inertia's shader (refraction, depth colour, ripples, sun glints). Falls back automatically if unsupported. |
+| `rippleStrength` | 1.0 | Strength of the surface ripples; 0 = perfectly smooth. |
+| `refractionStrength` | 1.0 | How strongly the water bends what is behind it. |
+| `waterAbsorption` | 1.0 | How quickly light is absorbed; higher makes deep water darker and bluer. |
 | `renderMode` | `surface` | `surface`: one continuous water surface. `particles`: every particle as a sphere. |
 | `surfaceSmoothness` | 2.0 | Surface smoothing radius relative to the surface cell size. |
 | `surfaceThreshold` | 0.3 | Surface level as a fraction of still-water density. |
@@ -103,6 +107,11 @@ jars, creates the tag `v<version>` and publishes the release.
   as it can; the render thread draws the newest surface, moved along the flow since it was built,
   shaded with Fresnel reflection, biome colour and block light. Isolated splashes are drawn as
   small droplets.
+- **Water shader:** after the main level pass the scene colour and depth are copied, then the
+  surface is drawn with Inertia's own shader in a separate render pass: refraction through
+  ripple-distorted lookups, per-pixel absorption from the depth difference (clear shallows, blue
+  depths), Fresnel sky reflection and a sun glint. It is registered as an optional pipeline, so a
+  compile failure only switches back to the simple rendering.
 - **Foam:** PhysX diffuse particles (foam, spray, bubbles) spawn where the water splashes or
   churns and are drawn as soft streaks stretched along the flow.
 
