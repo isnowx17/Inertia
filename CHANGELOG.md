@@ -3,6 +3,30 @@
 All notable changes to Inertia are documented here. Versioning rules are described in
 [PLAN.md](PLAN.md#5-sürümleme).
 
+## [Unreleased] — 0.2.0
+
+### Added
+- **Foam streaks.** PhysX now simulates foam, spray and bubbles (diffuse particles) wherever the
+  water splashes, speeds up or traps air. They are carried by the flow and drawn as soft white
+  streaks stretched along it, leaving foam lines behind moving water before they fade out.
+- **Quality levels** (`quality`: `low`, `medium`, `high`, `ultra`, `custom`). Higher levels use
+  more and smaller particles (up to 4096 per block and 524,288 in total on `ultra`) and a finer
+  surface. A bucket is always one block of water.
+- Config: `foam`, `foamAmount`, `foamLifetime`, `foamSize`; `surfaceCellSize` for `custom`.
+- `/inertia info` shows the quality level and the number of foam particles.
+
+### Changed
+- Finer surface detail: the surface grid now has an absolute cell size per quality level (down
+  to 0.1 blocks) instead of being tied to the particle spacing.
+- The surface is meshed in parallel on all spare CPU cores.
+- The surface moves along the local flow between rebuilds, so the water flows smoothly at any
+  frame rate even when meshing takes longer than a frame.
+- More GPU room for particle contacts so large amounts of water do not leak through blocks.
+- Default quality is `medium` (1000 particles per block, previously 512).
+
+### Removed
+- `surfaceResolution` (replaced by the quality levels and `surfaceCellSize`).
+
 ## [0.1.1] — Beta
 
 ### Fixed

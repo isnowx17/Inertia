@@ -20,10 +20,14 @@ import physx.NativeObject;
 import physx.PxTopLevelFunctions;
 import physx.common.PxCudaContextManager;
 import physx.common.PxCudaTopLevelFunctions;
+import physx.common.PxGpuDynamicsMemoryConfig;
 import physx.common.PxVec3;
 import physx.common.PxVec4;
+import physx.particles.PxDiffuseParticleParams;
 import physx.particles.PxPBDMaterial;
 import physx.particles.PxPBDParticleSystem;
+import physx.particles.PxParticleAndDiffuseBuffer;
+import physx.particles.PxParticleAndDiffuseBufferDesc;
 import physx.particles.PxParticleBuffer;
 import physx.particles.PxParticleBufferDesc;
 import physx.particles.PxParticleBufferFlagEnum;
@@ -64,12 +68,24 @@ public final class FluidSimulation implements AutoCloseable {
 	private final PxPBDMaterial material;
 	private final PxPBDParticleSystem particleSystem;
 	private final PxParticleBuffer buffer;
+	/** Same object as {@link #buffer} when foam is enabled, otherwise {@code null}. */
+	private final PxParticleAndDiffuseBuffer diffuseBuffer;
+	private final int substeps;
 	private final int phase;
 
 	// Pinned host staging memory, accessed from Java through direct buffers.
 	private final PxVec4 hostPositions;
 	private final PxVec4 hostVelocities;
 	private final NativeObject hostPhases;
+	private final PxVec4 hostDiffuse;
+	private final FloatBuffer hostDiffuseView;
+	private final int maxFoam;
+
+	// Foam/spray/bubble particles after the latest tick: xyz + remaining lifetime per particle.
+	private float[] foam = new float[0];
+	private int foamCount;
+	private long foamHiddenUntilTick;
+	private long readBackNanos;
 	private final FloatBuffer hostPos;
 	private final FloatBuffer hostVel;
 
@@ -96,8 +112,11 @@ public final class FluidSimulation implements AutoCloseable {
 
 	public FluidSimulation(InertiaConfig config) {
 		this.config = config;
-		this.params = FluidParameters.forSpacing(config.particleSpacing);
-		this.capacity = config.maxParticles;
+		InertiaConfig.Quality quality = config.effectiveQuality();
+		this.params = FluidParameters.forSpacing(quality.particleSpacing());
+		this.capacity = quality.maxParticles();
+		this.substeps = quality.substepsPerTick();
+		this.maxFoam = config.foam ? Math.min(capacity / 2, 262_144) : 0;
 		this.cuda = PhysXRuntime.cuda();
 
 		this.scene = createScene();
@@ -147,13 +166,45 @@ public final class FluidSimulation implements AutoCloseable {
 				phases.put(i, phase);
 			}
 
-			PxParticleBufferDesc desc = PxParticleBufferDesc.createAt(mem, MemoryStack::nmalloc);
-			desc.setMaxParticles(capacity);
-			desc.setNumActiveParticles(0);
-			desc.setPositions(hostPositions);
-			desc.setVelocities(hostVelocities);
-			desc.setPhases(NativeArrayHelpers.voidToU32Ptr(hostPhases));
-			buffer = PxCudaTopLevelFunctions.CreateAndPopulateParticleBuffer(desc, cuda);
+			if (maxFoam > 0) {
+				// Foam, spray and bubbles: PhysX spawns these "diffuse" particles where the water has
+				// high kinetic energy or traps air, and carries them with the flow.
+				PxDiffuseParticleParams diffuse = PxDiffuseParticleParams.createAt(mem, MemoryStack::nmalloc);
+				diffuse.setThreshold(config.foamThreshold());
+				diffuse.setLifetime(config.foamLifetime);
+				diffuse.setBubbleDrag(0.9f);
+				diffuse.setBuoyancy(0.9f);
+				diffuse.setAirDrag(0.0f);
+				diffuse.setKineticEnergyWeight(0.01f);
+				diffuse.setPressureWeight(1.0f);
+				diffuse.setDivergenceWeight(10.0f);
+				diffuse.setUseAccurateVelocity(false);
+
+				PxParticleAndDiffuseBufferDesc desc = PxParticleAndDiffuseBufferDesc.createAt(mem, MemoryStack::nmalloc);
+				desc.setMaxParticles(capacity);
+				desc.setNumActiveParticles(0);
+				desc.setPositions(hostPositions);
+				desc.setVelocities(hostVelocities);
+				desc.setPhases(NativeArrayHelpers.voidToU32Ptr(hostPhases));
+				desc.setMaxDiffuseParticles(maxFoam);
+				desc.setMaxActiveDiffuseParticles(maxFoam);
+				desc.setDiffuseParams(diffuse);
+				diffuseBuffer = PxCudaTopLevelFunctions.CreateAndPopulateParticleAndDiffuseBuffer(desc, cuda);
+				buffer = diffuseBuffer;
+				hostDiffuse = PxCudaTopLevelFunctions.allocPinnedHostBufferPxVec4(cuda, maxFoam);
+				hostDiffuseView = MemoryUtil.memFloatBuffer(hostDiffuse.getAddress(), maxFoam * 4);
+			} else {
+				PxParticleBufferDesc desc = PxParticleBufferDesc.createAt(mem, MemoryStack::nmalloc);
+				desc.setMaxParticles(capacity);
+				desc.setNumActiveParticles(0);
+				desc.setPositions(hostPositions);
+				desc.setVelocities(hostVelocities);
+				desc.setPhases(NativeArrayHelpers.voidToU32Ptr(hostPhases));
+				diffuseBuffer = null;
+				buffer = PxCudaTopLevelFunctions.CreateAndPopulateParticleBuffer(desc, cuda);
+				hostDiffuse = null;
+				hostDiffuseView = null;
+			}
 			particleSystem.addParticleBuffer(buffer);
 		}
 
@@ -181,7 +232,17 @@ public final class FluidSimulation implements AutoCloseable {
 			desc.getFlags().raise(PxSceneFlagEnum.eENABLE_GPU_DYNAMICS);
 			desc.setBroadPhaseType(PxBroadPhaseTypeEnum.eGPU);
 			desc.setSolverType(PxSolverTypeEnum.eTGS);
-			return PhysXRuntime.physics().createScene(desc);
+
+			// Room for particle-vs-block contacts on the GPU; if this overflows, water leaks through
+			// the ground at high particle counts.
+			PxGpuDynamicsMemoryConfig gpuMemory = new PxGpuDynamicsMemoryConfig();
+			gpuMemory.setMaxParticleContacts(Math.max(gpuMemory.getMaxParticleContacts(), capacity * 4));
+			desc.setGpuDynamicsConfig(gpuMemory);
+			try {
+				return PhysXRuntime.physics().createScene(desc);
+			} finally {
+				gpuMemory.destroy();
+			}
 		}
 	}
 
@@ -266,6 +327,11 @@ public final class FluidSimulation implements AutoCloseable {
 	}
 
 	private void rebase(BlockPos around) {
+		// Foam still alive on the GPU is expressed relative to the old origin; hide it until it expired.
+		if (foamCount > 0) {
+			foamHiddenUntilTick = tick + (long) Math.ceil(config.foamLifetime * 20f) + 1;
+			foamCount = 0;
+		}
 		// Align the origin to a chunk section so section actors keep integer offsets.
 		int x = around.getX() & ~15;
 		int y = around.getY() & ~15;
@@ -310,6 +376,7 @@ public final class FluidSimulation implements AutoCloseable {
 	public void tick(ClientLevel level, Player player) {
 		tick++;
 		if (activeCount == 0) {
+			foamCount = 0;
 			terrain.update(level, new LongOpenHashSet(), new LongOpenHashSet(), tick);
 			playerBody.remove();
 			return;
@@ -320,7 +387,6 @@ public final class FluidSimulation implements AutoCloseable {
 		updateTerrain(level);
 		playerBody.update(player, originX, originY, originZ, config.playerInteraction);
 
-		int substeps = config.substepsPerTick;
 		float dt = TICK_SECONDS / substeps;
 		for (int i = 0; i < substeps; i++) {
 			scene.simulate(dt);
@@ -329,6 +395,8 @@ public final class FluidSimulation implements AutoCloseable {
 		scene.fetchResultsParticleSystem();
 
 		readBack();
+		readBackFoam();
+		readBackNanos = System.nanoTime();
 		removeLostParticles(level, player);
 
 		lastStepMillis = (System.nanoTime() - started) / 1_000_000f;
@@ -455,8 +523,32 @@ public final class FluidSimulation implements AutoCloseable {
 	}
 
 	/** Removes all water but keeps the GPU resources for reuse. */
+	private void readBackFoam() {
+		if (diffuseBuffer == null) {
+			return;
+		}
+		int count = Math.min(diffuseBuffer.getNbActiveDiffuseParticles(), maxFoam);
+		if (count <= 0 || tick < foamHiddenUntilTick) {
+			foamCount = 0;
+			return;
+		}
+		long device = PxCudaTopLevelFunctions.pxVec4deviceptr(diffuseBuffer.getDiffusePositionLifeTime());
+		cuda.acquireContext();
+		try {
+			cuda.getCudaContext().memcpyDtoH(hostDiffuse, device, count * VEC4_BYTES);
+		} finally {
+			cuda.releaseContext();
+		}
+		if (foam.length < count * 4) {
+			foam = new float[Math.max(count * 4, foam.length * 2)];
+		}
+		hostDiffuseView.get(0, foam, 0, count * 4);
+		foamCount = count;
+	}
+
 	public void clearParticles() {
 		activeCount = 0;
+		foamCount = 0;
 		buffer.setNbActiveParticles(0);
 		terrain.clear();
 		playerBody.remove();
@@ -521,6 +613,20 @@ public final class FluidSimulation implements AutoCloseable {
 		return terrain.sectionCount();
 	}
 
+	/** Foam, spray and bubble particles: xyz relative to the origin plus remaining lifetime, per particle. */
+	public float[] foamParticles() {
+		return foam;
+	}
+
+	public int foamCount() {
+		return foamCount;
+	}
+
+	/** {@link System#nanoTime()} of the latest read-back, i.e. the time the current positions refer to. */
+	public long readBackNanos() {
+		return readBackNanos;
+	}
+
 	public float lastStepMillis() {
 		return lastStepMillis;
 	}
@@ -538,5 +644,8 @@ public final class FluidSimulation implements AutoCloseable {
 		PxCudaTopLevelFunctions.freePinnedHostBufferPxVec4(cuda, hostPositions);
 		PxCudaTopLevelFunctions.freePinnedHostBufferPxVec4(cuda, hostVelocities);
 		PxCudaTopLevelFunctions.freePinnedHostBufferPxU32(cuda, NativeArrayHelpers.voidToU32Ptr(hostPhases));
+		if (hostDiffuse != null) {
+			PxCudaTopLevelFunctions.freePinnedHostBufferPxVec4(cuda, hostDiffuse);
+		}
 	}
 }

@@ -6,8 +6,9 @@
   "message.inertia.singleplayer_only": "Inertia: sıvı fiziği sadece tek oyunculu modda çalışır",
   "message.inertia.limit_reached": "Inertia: parçacık sınırına ulaşıldı (%s). /inertia clear kullan ya da config/inertia.json içinde maxParticles değerini artır",
   "message.inertia.failed": "Inertia: sıvı simülasyonu bir hata yüzünden durdu. Ayrıntılar log dosyasında.",
+  "command.inertia.info.quality": "Kalite: %s",
   "command.inertia.info.physx": "PhysX: %s (%s)",
   "command.inertia.info.idle": "Sıvı simülasyonu: çalışmıyor",
-  "command.inertia.info.simulation": "Sıvı simülasyonu: %s / %s parçacık, %s çarpışma bölümü, tick başına %s ms",
+  "command.inertia.info.simulation": "Sıvı simülasyonu: %s / %s parçacık, %s köpük parçacığı, %s çarpışma bölümü, tick başına %s ms",
   "command.inertia.clear": "%s su parçacığı silindi"
 }

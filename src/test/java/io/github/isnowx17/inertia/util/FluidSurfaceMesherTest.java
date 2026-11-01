@@ -117,13 +117,84 @@ class FluidSurfaceMesherTest {
 	}
 
 	@Test
-	void speedIsAveragedIntoVertices() {
+	void velocityIsAveragedIntoVerticesAndField() {
 		float[] p = {0f, 0f, 0f, 0.1f, 0f, 0f};
-		float[] s = {4f, 4f};
-		FluidSurfaceMesher.Mesh mesh = mesher().mesh(p, s, 2, null);
-		for (int v = 0; v < mesh.vertexCount; v++) {
-			assertEquals(4f, mesh.vertices[v * FluidSurfaceMesher.VERTEX_STRIDE + 6], 1e-3f);
+		float[] v = {4f, 0f, -2f, 4f, 0f, -2f};
+		FluidSurfaceMesher mesher = mesher();
+		FluidSurfaceMesher.Mesh mesh = mesher.mesh(p, v, 2, null);
+		assertTrue(mesh.vertexCount > 0);
+		for (int i = 0; i < mesh.vertexCount; i++) {
+			int o = i * FluidSurfaceMesher.VERTEX_STRIDE;
+			assertEquals(4f, mesh.vertices[o + 6], 1e-3f);
+			assertEquals(0f, mesh.vertices[o + 7], 1e-3f);
+			assertEquals(-2f, mesh.vertices[o + 8], 1e-3f);
 		}
+		float[] out = new float[3];
+		mesher.velocityAt(0.05f, 0f, 0f, out);
+		assertEquals(4f, out[0], 1e-3f);
+		assertEquals(-2f, out[2], 1e-3f);
+	}
+
+	@Test
+	void parallelMeshingMatchesSequential() throws Exception {
+		Random random = new Random(7);
+		int count = 30_000;
+		float[] p = new float[count * 3];
+		float[] v = new float[count * 3];
+		for (int i = 0; i < count; i++) {
+			// A puddle plus a falling column, spread over many bricks (including negative coordinates).
+			boolean column = i % 3 == 0;
+			p[i * 3] = column ? random.nextFloat() : random.nextFloat() * 12f - 6f;
+			p[i * 3 + 1] = column ? random.nextFloat() * 6f : random.nextFloat() * 0.3f;
+			p[i * 3 + 2] = column ? random.nextFloat() : random.nextFloat() * 12f - 6f;
+			v[i * 3 + 1] = column ? -3f : 0f;
+		}
+
+		FluidSurfaceMesher.Mesh sequential = mesher().mesh(p, v, count, null);
+		java.util.concurrent.ForkJoinPool pool = new java.util.concurrent.ForkJoinPool(4);
+		try {
+			FluidSurfaceMesher.Mesh parallel = new FluidSurfaceMesher(SPACING, SPACING * 2f, 0.6f, pool).mesh(p, v, count, null);
+			assertEquals(sequential.vertexCount, parallel.vertexCount);
+			assertEquals(sequential.quadCount, parallel.quadCount);
+			assertEquals(vertexSet(sequential), vertexSet(parallel));
+			assertClosed(parallel);
+		} finally {
+			pool.shutdown();
+		}
+	}
+
+	@Test
+	void sparseParticlesAreTheIsolatedOnes() {
+		// A dense block plus one lone droplet far away.
+		int n = 8;
+		float[] p = new float[(n * n * n + 1) * 3];
+		int i = 0;
+		for (int x = 0; x < n; x++) {
+			for (int y = 0; y < n; y++) {
+				for (int z = 0; z < n; z++) {
+					p[i++] = (x + 0.5f) * SPACING;
+					p[i++] = (y + 0.5f) * SPACING;
+					p[i++] = (z + 0.5f) * SPACING;
+				}
+			}
+		}
+		p[i++] = 5f;
+		p[i++] = 5f;
+		p[i] = 5f;
+		FluidSurfaceMesher mesher = new FluidSurfaceMesher(SPACING, SPACING * 3f, 0.3f * FluidSurfaceMesher.restDensity(SPACING, SPACING * 3f));
+		mesher.mesh(p, null, n * n * n + 1, null);
+		int[] sparse = mesher.sparseParticles(p, n * n * n + 1);
+		assertTrue(java.util.Arrays.stream(sparse).anyMatch(index -> index == n * n * n), "lone droplet not sparse");
+		// At most the eight corner particles of the block may also fall below the cut-off.
+		assertTrue(sparse.length <= 9, "too many sparse particles: " + sparse.length);
+	}
+
+	private static java.util.Set<String> vertexSet(FluidSurfaceMesher.Mesh mesh) {
+		java.util.Set<String> set = new java.util.HashSet<>();
+		for (int v = 0; v < mesh.vertexCount; v++) {
+			set.add(String.format(java.util.Locale.ROOT, "%.4f %.4f %.4f", vx(mesh, v), vy(mesh, v), vz(mesh, v)));
+		}
+		return set;
 	}
 
 	@Test
