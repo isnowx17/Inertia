@@ -1,0 +1,38 @@
+{
+	"schemaVersion": 1,
+	"id": "inertia",
+	"version": "${version}",
+	"name": "Inertia",
+	"description": "An advanced, professional physics engine for Minecraft: Java Edition. v0.1 adds GPU-simulated water powered by NVIDIA PhysX (NVIDIA GPU required, singleplayer only).",
+	"authors": [
+		"isnowx17"
+	],
+	"contact": {
+		"homepage": "https://github.com/isnowx17/Inertia",
+		"sources": "https://github.com/isnowx17/Inertia",
+		"issues": "https://github.com/isnowx17/Inertia/issues"
+	},
+	"license": "AGPL-3.0-only",
+	"icon": "assets/inertia/icon.png",
+	"environment": "client",
+	"entrypoints": {
+		"main": [
+			"io.github.isnowx17.inertia.Inertia"
+		],
+		"client": [
+			"io.github.isnowx17.inertia.client.InertiaClient"
+		]
+	},
+	"mixins": [
+		{
+			"config": "inertia.client.mixins.json",
+			"environment": "client"
+		}
+	],
+	"depends": {
+		"fabricloader": ">=0.20.1",
+		"minecraft": "~26.3",
+		"java": ">=25",
+		"fabric-api": "*"
+	}
+}
