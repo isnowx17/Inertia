@@ -196,7 +196,13 @@ public final class WaterPass implements AutoCloseable {
 		);
 		GpuBufferSlice overlayTransforms = RenderSystem.getDynamicUniforms().writeTransform(modelView);
 
+		// Resolve every texture before the pass opens: the first lookup of a texture uploads it, and
+		// uploads are not allowed while a render pass is open.
 		AbstractTexture surface = minecraft.getTextureManager().getTexture(SURFACE_TEXTURE);
+		AbstractTexture[] overlayTextures = new AbstractTexture[overlays.size()];
+		for (int i = 0; i < overlays.size(); i++) {
+			overlayTextures[i] = minecraft.getTextureManager().getTexture(overlays.get(i).texture());
+		}
 		var samplers = RenderSystem.getSamplerCache();
 
 		try (RenderPass pass = encoder.createRenderPass(
@@ -226,7 +232,7 @@ public final class WaterPass implements AutoCloseable {
 					if (overlay.indexCount() == 0 || overlay.vertices().remaining() == 0) {
 						continue;
 					}
-					AbstractTexture texture = minecraft.getTextureManager().getTexture(overlay.texture());
+					AbstractTexture texture = overlayTextures[i];
 					pass.setUniform("Sampler0", texture.getTextureView(), texture.getSampler());
 					pass.setVertexBuffer(0, vertexBuffer.slice(overlayOffsets[i], overlay.vertices().remaining()));
 					pass.drawIndexed(overlay.indexCount(), 1, 0, 0, 0);
