@@ -3,7 +3,10 @@
 All notable changes to Inertia are documented here. Versioning rules are described in
 [PLAN.md](PLAN.md#5-sürümleme).
 
-## [Unreleased] — 0.3.0
+## [0.3.0] — Beta
+
+First release since 0.1.1; it also contains the 0.2.0 changes listed below, which were not
+released separately.
 
 ### Added
 - **PhysX Flowing Water Bucket:** right-click a block face to start a continuous stream out of it
@@ -47,7 +50,7 @@ All notable changes to Inertia are documented here. Versioning rules are describ
 - Default quality is now `high` (1728 particles per block). Config files that still had the old
   default `medium` are moved to `high`.
 
-## [Unreleased] — 0.2.0
+## [0.2.0] — included in 0.3.0
 
 ### Added
 - **Foam streaks.** PhysX now simulates foam, spray and bubbles (diffuse particles) wherever the
