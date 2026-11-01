@@ -12,9 +12,10 @@ Bu belge, projenin ilk sürümünün (v0.1.0) kapsamını ve kararlarını tanı
 |---|---|
 | Mod platformu | Fabric (Fabric Loader + Fabric API) |
 | Minecraft sürümü | 26.3 |
-| Java | 25 (26.x gereksinimi, başlarken resmi kaynaktan doğrulanacak) |
-| Eşlemeler (mappings) | Mojang isimleri (26.x obfuscate edilmeden yayınlanıyor) |
-| Fizik motoru | NVIDIA PhysX 5, [physx-jni](https://github.com/fabmax/physx-jni) üzerinden |
+| Java | 25 (Minecraft 26.3 gereksinimi, doğrulandı) |
+| Eşlemeler (mappings) | Mojang isimleri (26.3 obfuscate edilmeden yayınlanıyor, doğrulandı) |
+| Fabric | Loader 0.20.1, Fabric API 0.165.0+26.3, Loom 1.19, Gradle 9.8.2 |
+| Fizik motoru | NVIDIA PhysX 5.5.1, [physx-jni](https://github.com/fabmax/physx-jni) **2.5.1** üzerinden (CUDA destekli son physx-jni sürümü; 2.6+ CUDA'yı kaldırdı) |
 | Sıvı simülasyonu | PhysX PBD parçacık sistemi (GPU / CUDA) |
 | Lisans | AGPL-3.0 (PhysX BSD-3 ile uyumlu) |
 
@@ -23,6 +24,8 @@ Bu belge, projenin ilk sürümünün (v0.1.0) kapsamını ve kararlarını tanı
 - **Yalnızca NVIDIA ekran kartları** (CUDA destekli).
 - İşletim sistemi: **Windows x64** ve **Linux x64**.
 - CUDA bulunamazsa mod oyunu çökertmez; kendini devre dışı bırakır ve oyuncuya uyarı gösterir.
+- **Dağıtım:** her işletim sistemi için ayrı jar (`-windows`, `-linux`). PhysX GPU kütüphanesi platform başına ~250 MB (sıkıştırılmış ~83 MB) olduğu için tek jar yerine bu yol seçildi.
+- CUDA'lı native dosyalar Maven Central'da yok; derleme sırasında physx-jni'nin GitHub sürümünden indirilir ve SHA-256 ile doğrulanır.
 
 ## 3. v0.1.0 kapsamı
 
@@ -33,9 +36,10 @@ Bu belge, projenin ilk sürümünün (v0.1.0) kapsamını ve kararlarını tanı
 3. **GPU sıvı simülasyonu:** Akma, sıçrama, birikme, yüzey gerilimi, viskozite.
 4. **Bloklarla çarpışma:** Sıvının yakınındaki bloklardan çarpışma şekilleri üretilir; blok kırılıp konunca güncellenir.
 5. **Oyuncu etkileşimi:** Sıvı oyuncunun etrafından akar, oyuncuyu iter ve yavaşlatır.
-6. **Çizim:** Parçacıklar birleşik, pürüzsüz bir su yüzeyi olarak çizilir (screen-space fluid rendering). Yedek olarak basit parçacık çizimi bulunur.
+6. **Çizim:** v0.1.0'da parçacıklar ışıklandırılmış, kameraya dönük küre görünümlü sprite'lar olarak çizilir (biyom su rengi, blok ışığı, hızlı suda köpük tonu, tick'ler arası interpolasyon). Birleşik, pürüzsüz yüzey çizimi (screen-space fluid rendering) sonraki bir sürüme bırakıldı.
 7. **Ayarlar:** Toplam parçacık limiti, kalite, sıvının silinme mesafesi.
 8. **Altyapı:** Gradle projesi, GitHub Actions CI, README, CHANGELOG.
+9. **Test komutları:** `/inertia info` (GPU ve simülasyon durumu), `/inertia clear` (tüm suyu siler).
 
 ### Olmayacaklar
 
@@ -73,5 +77,5 @@ Kurallar:
 - Bir hane artınca **sağındaki haneler sıfırlanır** (`0.1.5` → `0.2.0`, `0.9.3` → `1.0.0`).
 - Haneler 9'da başa sarmaz: `0.1.9` → `0.1.10` → `0.1.11`, `1.9.0` → `1.10.0`.
 - Sürüm numarası tek bir yerde tutulur: `gradle.properties` (`mod_version`).
-- Jar adı: `inertia-<sürüm>+<minecraft sürümü>.jar` (ör. `inertia-0.1.0+26.3.jar`).
+- Jar adı: `inertia-<sürüm>+<minecraft sürümü>-<platform>.jar` (ör. `inertia-0.1.0+26.3-windows.jar`).
 - Her sürümün değişiklikleri `CHANGELOG.md` dosyasına yazılır.
