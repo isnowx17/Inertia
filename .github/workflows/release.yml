@@ -1,0 +1,129 @@
+name: Release
+
+# Publishes a GitHub release whenever mod_version in gradle.properties is a version that has not
+# been released yet: the Windows and Linux jars are built and attached, the tag v<version> is
+# created on the pushed commit, and the notes come from CHANGELOG.md.
+on:
+  push:
+    branches:
+      - '**'
+    paths:
+      - gradle.properties
+      - CHANGELOG.md
+      - .github/workflows/release.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  check:
+    name: Check version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      release: ${{ steps.version.outputs.release }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: version
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version=$(grep '^mod_version=' gradle.properties | cut -d= -f2)
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          if ! grep -q "^## \[${version}\]" CHANGELOG.md; then
+            echo "CHANGELOG.md has no entry for ${version}; not releasing"
+            echo "release=false" >> "$GITHUB_OUTPUT"
+          else
+            prerelease=$(gh release view "v${version}" --repo "${GITHUB_REPOSITORY}" --json isPrerelease --jq .isPrerelease 2>/dev/null || echo missing)
+            if [ "${prerelease}" = "missing" ]; then
+              echo "Releasing v${version}"
+              echo "release=true" >> "$GITHUB_OUTPUT"
+            elif [ "${prerelease}" = "true" ]; then
+              # Older releases were published as pre-releases, which GitHub hides from the
+              # repository sidebar; republish them as the latest full release.
+              echo "Promoting pre-release v${version} to a full release"
+              echo "release=true" >> "$GITHUB_OUTPUT"
+            else
+              echo "v${version} is already released"
+              echo "release=false" >> "$GITHUB_OUTPUT"
+            fi
+          fi
+
+  build:
+    name: Build (${{ matrix.platform }})
+    needs: check
+    if: needs.check.outputs.release == 'true'
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        platform: [windows, linux]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 25
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Build
+        run: ./gradlew build -Pplatform=${{ matrix.platform }} --no-parallel
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: inertia-${{ matrix.platform }}
+          path: build/libs/*-${{ matrix.platform }}.jar
+          if-no-files-found: error
+
+  release:
+    name: Publish release
+    needs: [check, build]
+    runs-on: ubuntu-latest
+    env:
+      VERSION: ${{ needs.check.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Release notes from CHANGELOG.md
+        run: |
+          version="${VERSION}"
+          awk -v v="$version" '
+            $0 ~ "^## \\[" v "\\]" { found = 1; next }
+            found && /^## \[/ { exit }
+            found { print }
+          ' CHANGELOG.md > notes.md
+          {
+            echo
+            echo "---"
+            echo
+            echo "**Requirements:** NVIDIA GPU with a current driver (CUDA), Windows x64 or Linux x64,"
+            echo "Minecraft 26.3, Fabric Loader 0.20.1+, Fabric API. Singleplayer only."
+            echo
+            echo "Download the jar for your operating system:"
+            echo "- Windows: \`inertia-${version}+26.3-windows.jar\`"
+            echo "- Linux: \`inertia-${version}+26.3-linux.jar\`"
+            echo
+            echo "Full feature list and history: [CHANGELOG.md](https://github.com/${GITHUB_REPOSITORY}/blob/v${version}/CHANGELOG.md)"
+          } >> notes.md
+          cat notes.md
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ env.VERSION }}
+          target_commitish: ${{ github.sha }}
+          name: Inertia ${{ env.VERSION }}
+          body_path: notes.md
+          # 0.x versions are beta by the versioning rules, but are published as full releases so
+          # GitHub shows them as "Latest" on the repository page.
+          prerelease: false
+          make_latest: true
+          files: dist/*.jar
+          fail_on_unmatched_files: true

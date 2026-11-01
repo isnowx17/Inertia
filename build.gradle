@@ -1,0 +1,142 @@
+import java.security.MessageDigest
+
+plugins {
+	id 'net.fabricmc.fabric-loom' version "${loom_version}"
+}
+
+// ---------------------------------------------------------------------------
+// Target platform
+//
+// The CUDA build of PhysX ships a ~250 MB GPU library per operating system, so
+// Inertia is distributed as one jar per platform:
+//   ./gradlew build -Pplatform=windows   -> inertia-<version>-windows.jar
+//   ./gradlew build -Pplatform=linux     -> inertia-<version>-linux.jar
+// Without -Pplatform the platform of the current machine is used.
+// ---------------------------------------------------------------------------
+def supportedPlatforms = ['windows', 'linux']
+def detectPlatform = {
+	def os = System.getProperty('os.name').toLowerCase(Locale.ROOT)
+	if (os.contains('win')) return 'windows'
+	if (os.contains('linux')) return 'linux'
+	return 'linux' // macOS has no CUDA; default to linux so the project still configures
+}
+def targetPlatform = (findProperty('platform') ?: detectPlatform()).toString().toLowerCase(Locale.ROOT)
+if (!supportedPlatforms.contains(targetPlatform)) {
+	throw new GradleException("Unsupported platform '${targetPlatform}'. Use one of: ${supportedPlatforms.join(', ')}")
+}
+
+version = "${project.mod_version}+${project.minecraft_version}"
+group = project.maven_group
+
+base {
+	archivesName = 'inertia'
+}
+
+repositories {
+	mavenCentral()
+
+	// The CUDA-enabled physx-jni natives are not on Maven Central; they are only
+	// attached to the GitHub release. Expose them as a regular Gradle module so
+	// they can be nested into the mod jar with `include`.
+	ivy {
+		name = 'physx-jni CUDA natives (GitHub releases)'
+		url = 'https://github.com/fabmax/physx-jni/releases/download/'
+		patternLayout {
+			artifact 'v[revision]/[artifact]-[revision].[ext]'
+		}
+		metadataSources { artifact() }
+		content { includeGroup 'physx-jni-cuda' }
+	}
+}
+
+loom {
+	splitEnvironmentSourceSets()
+
+	mods {
+		"inertia" {
+			sourceSet sourceSets.main
+			sourceSet sourceSets.client
+		}
+	}
+}
+
+configurations {
+	physxCudaNatives
+}
+
+dependencies {
+	minecraft "com.mojang:minecraft:${project.minecraft_version}"
+	implementation "net.fabricmc:fabric-loader:${project.loader_version}"
+	implementation "net.fabricmc.fabric-api:fabric-api:${project.fabric_api_version}"
+
+	// PhysX Java bindings (classes only) + CUDA natives for the target platform.
+	implementation "de.fabmax:physx-jni:${project.physx_jni_version}"
+	include "de.fabmax:physx-jni:${project.physx_jni_version}"
+
+	def cudaNatives = "physx-jni-cuda:physx-jni-natives-${targetPlatform}-cuda:${project.physx_jni_version}@jar"
+	runtimeOnly cudaNatives
+	include cudaNatives
+	physxCudaNatives cudaNatives
+
+	testImplementation platform('org.junit:junit-bom:5.13.4')
+	testImplementation 'org.junit.jupiter:junit-jupiter'
+	testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+}
+
+// The CUDA natives come from a GitHub release, not a signed Maven repository:
+// pin their checksum so a changed download can never end up in a build.
+def verifyPhysxNatives = tasks.register('verifyPhysxNatives') {
+	def expected = project.property("physx_cuda_sha256_${targetPlatform}").toString()
+	def files = configurations.physxCudaNatives
+	inputs.files(files)
+	doLast {
+		files.each { File f ->
+			def digest = MessageDigest.getInstance('SHA-256')
+			f.withInputStream { is ->
+				byte[] buf = new byte[1 << 16]
+				int n
+				while ((n = is.read(buf)) > 0) digest.update(buf, 0, n)
+			}
+			def actual = digest.digest().encodeHex().toString()
+			if (actual != expected) {
+				throw new GradleException("Checksum mismatch for ${f.name}: expected ${expected}, got ${actual}")
+			}
+		}
+	}
+}
+
+processResources {
+	def version = project.mod_version
+	inputs.property 'version', version
+
+	filesMatching('fabric.mod.json') {
+		expand 'version': version
+	}
+}
+
+tasks.withType(JavaCompile).configureEach {
+	it.options.release = 25
+	it.options.encoding = 'UTF-8'
+}
+
+java {
+	toolchain {
+		languageVersion = JavaLanguageVersion.of(25)
+	}
+	withSourcesJar()
+}
+
+jar {
+	dependsOn verifyPhysxNatives
+	archiveClassifier = targetPlatform
+
+	def projectName = project.name
+	inputs.property 'projectName', projectName
+	from('LICENSE') {
+		rename { "${it}_${projectName}" }
+	}
+}
+
+test {
+	useJUnitPlatform()
+}
