@@ -57,6 +57,13 @@ public final class FluidSurfaceRenderer {
 	/** Foam particles drawn at most per frame; beyond this every n-th particle is drawn. */
 	private static final int MAX_FOAM_DRAWN = 120_000;
 	private static final float TICK_SECONDS = 0.05f;
+	/** Isolated particles slower than this (blocks/second) are not drawn as droplets. */
+	private static final float MIN_DROPLET_SPEED = 1.0f;
+	/** Foam is drawn where the field density is within this band around the surface threshold. */
+	private static final float FOAM_MIN_DENSITY = 0.15f;
+	private static final float FOAM_MAX_DENSITY = 1.6f;
+	/** Light is sampled this far above / along the normal, so geometry touching blocks is not black. */
+	private static final float LIGHT_PROBE_OFFSET = 0.35f;
 	/** Foam fades out during its last this many seconds of life. */
 	private static final float FOAM_FADE = 0.8f;
 
@@ -248,12 +255,20 @@ public final class FluidSurfaceRenderer {
 		if (target.droplets.length < sparse.length * 6) {
 			target.droplets = new float[sparse.length * 6];
 		}
-		for (int n = 0; n < sparse.length; n++) {
-			int i = sparse[n];
+		int n = 0;
+		for (int i : sparse) {
+			float vx = velocities[i * 3];
+			float vy = velocities[i * 3 + 1];
+			float vz = velocities[i * 3 + 2];
+			// A lone particle lying still on the ground is a leftover of a drained puddle, not spray.
+			if (vx * vx + vy * vy + vz * vz < MIN_DROPLET_SPEED * MIN_DROPLET_SPEED) {
+				continue;
+			}
 			System.arraycopy(positions, i * 3, target.droplets, n * 6, 3);
 			System.arraycopy(velocities, i * 3, target.droplets, n * 6 + 3, 3);
+			n++;
 		}
-		target.dropletCount = sparse.length;
+		target.dropletCount = n;
 	}
 
 	/** Attaches the local flow velocity to every foam particle; it moves and stretches the foam. */
@@ -264,6 +279,8 @@ public final class FluidSurfaceRenderer {
 			target.foam = new float[drawn * 7];
 		}
 		float[] v = velocityScratch;
+		float minDensity = mesher.threshold() * FOAM_MIN_DENSITY;
+		float maxDensity = mesher.threshold() * FOAM_MAX_DENSITY;
 		int n = 0;
 		for (int i = 0; i < count; i += stride) {
 			float x = foam[i * 4];
@@ -271,6 +288,12 @@ public final class FluidSurfaceRenderer {
 			float z = foam[i * 4 + 2];
 			float life = foam[i * 4 + 3];
 			if (!Float.isFinite(x) || !Float.isFinite(y) || !Float.isFinite(z) || life <= 0f) {
+				continue;
+			}
+			// Only foam floating in the surface band of the water: spray flying through the air and
+			// bubbles deep inside the water are not drawn as foam.
+			float density = mesher.densityAt(x, y, z);
+			if (density < minDensity || density > maxDensity) {
 				continue;
 			}
 			mesher.velocityAt(x, y, z, v);
@@ -336,8 +359,11 @@ public final class FluidSurfaceRenderer {
 			int alpha = Mth.clamp(Math.round(baseAlpha + (255 - baseAlpha) * Math.max(fresnel, churn * 0.4f)), 0, 255);
 			colors[i] = (alpha << 24) | rgb;
 
+			float probe = LIGHT_PROBE_OFFSET;
 			lights[i] = light(level, block,
-				Mth.floor(lx + 1e-3f) + result.originX, Mth.floor(ly + 1e-3f) + result.originY, Mth.floor(lz + 1e-3f) + result.originZ);
+				Mth.floor(lx + v[o + 3] * probe) + result.originX,
+				Mth.floor(ly + Math.max(v[o + 4], 0f) * probe + 0.05f) + result.originY,
+				Mth.floor(lz + v[o + 5] * probe) + result.originZ);
 		}
 
 		int quadCount = mesh.quadCount;
@@ -377,7 +403,8 @@ public final class FluidSurfaceRenderer {
 			pos[i * 3] = lx + offX;
 			pos[i * 3 + 1] = ly + offY;
 			pos[i * 3 + 2] = lz + offZ;
-			lights[i] = light(level, block, Mth.floor(lx) + result.originX, Mth.floor(ly) + result.originY, Mth.floor(lz) + result.originZ);
+			lights[i] = light(level, block,
+				Mth.floor(lx) + result.originX, Mth.floor(ly + LIGHT_PROBE_OFFSET) + result.originY, Mth.floor(lz) + result.originZ);
 		}
 
 		Quaternionf q = new Quaternionf(orientation);
@@ -490,14 +517,16 @@ public final class FluidSurfaceRenderer {
 			corners[c + 9] = px - ax + bx;
 			corners[c + 10] = py - ay + by;
 			corners[c + 11] = pz - az + bz;
-			normals[drawn * 3] = -ex;
-			normals[drawn * 3 + 1] = -ey;
-			normals[drawn * 3 + 2] = -ez;
+			// Foam floats on the water: light it like an upward-facing surface so it stays white.
+			normals[drawn * 3] = 0f;
+			normals[drawn * 3 + 1] = 1f;
+			normals[drawn * 3 + 2] = 0f;
 
 			float fade = Mth.clamp(life / FOAM_FADE, 0f, 1f);
-			int alpha = Mth.clamp(Math.round(fade * 220f), 0, 255);
+			int alpha = Mth.clamp(Math.round(fade * 190f), 0, 255);
 			colors[drawn] = (alpha << 24) | FOAM_COLOR;
-			lights[drawn] = light(level, block, Mth.floor(lx) + result.originX, Mth.floor(ly) + result.originY, Mth.floor(lz) + result.originZ);
+			lights[drawn] = light(level, block,
+				Mth.floor(lx) + result.originX, Mth.floor(ly + LIGHT_PROBE_OFFSET) + result.originY, Mth.floor(lz) + result.originZ);
 			drawn++;
 		}
 

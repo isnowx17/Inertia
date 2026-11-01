@@ -21,6 +21,10 @@ public final class InertiaConfig {
 	public static final String RENDER_SURFACE = "surface";
 	public static final String RENDER_PARTICLES = "particles";
 	public static final String QUALITY_CUSTOM = "custom";
+	private static final int CURRENT_VERSION = 2;
+
+	/** Version of this file's defaults; older files get changed defaults migrated on load. */
+	public int configVersion = 0;
 
 	/**
 	 * Simulation and surface detail: {@code "low"}, {@code "medium"}, {@code "high"}, {@code "ultra"}
@@ -75,7 +79,7 @@ public final class InertiaConfig {
 	public boolean foam = true;
 
 	/** How easily foam forms, 0..1. */
-	public float foamAmount = 0.6f;
+	public float foamAmount = 0.4f;
 
 	/** How long foam lives in seconds. Longer-lived foam is stretched into longer streaks by the flow. */
 	public float foamLifetime = 2.5f;
@@ -145,9 +149,19 @@ public final class InertiaConfig {
 			}
 		}
 
+		config.migrate();
 		config.clamp();
 		config.save(file);
 		return config;
+	}
+
+	/** Applies defaults that changed since the file was written. */
+	private void migrate() {
+		if (configVersion < 2) {
+			// 0.2.0 test build: foam formed too easily on thin water.
+			foamAmount = 0.4f;
+		}
+		configVersion = CURRENT_VERSION;
 	}
 
 	private void clamp() {
@@ -168,7 +182,7 @@ public final class InertiaConfig {
 		surfaceThreshold = clamp(orDefault(surfaceThreshold, 0.3f), 0.05f, 1f);
 		renderScale = clamp(orDefault(renderScale, 1.6f), 0.5f, 4f);
 		renderOpacity = clamp(orDefault(renderOpacity, 0.6f), 0.05f, 1f);
-		foamAmount = clamp(orDefault(foamAmount, 0.6f), 0f, 1f);
+		foamAmount = clamp(orDefault(foamAmount, 0.4f), 0f, 1f);
 		foamLifetime = clamp(orDefault(foamLifetime, 2.5f), 0.2f, 10f);
 		foamSize = clamp(orDefault(foamSize, 1f), 0.25f, 4f);
 		waterFriction = clamp(orDefault(waterFriction, 0.3f), 0f, 1f);
