@@ -82,6 +82,6 @@ Kurallar:
 
 ## 6. Sonraki sürümler
 
-- **0.2.0 (geliştiriliyor):** Daha ince detay (kalite seviyeleri: low / medium / high / ultra, daha ince yüzey ızgarası, çok çekirdekli yüzey hesabı, akışla taşınan yüzey) ve köpük çizgileri (PhysX diffuse parçacıkları: köpük, sıçrama, kabarcık; akış yönünde uzayan köpük izleri).
-- **0.3.0 (geliştiriliyor):** Akan su kovası (sürekli su kaynağı), otomatik büyüyen parçacık tamponu (pratikte sınırsız, `particleLimit`), ekran uzayı yansımaları, kostikler; kendi su shader'ı (kırılma, piksel bazında derinliğe göre renk ve berraklık, dalgacıklar, gökyüzü yansıması, güneş parlaması); basit çizimde de köşe noktası bazında derinlik rengi; varsayılan kalite `high`.
+- **0.2.0 (0.3.0 ile yayınlandı):** Daha ince detay (kalite seviyeleri: low / medium / high / ultra, daha ince yüzey ızgarası, çok çekirdekli yüzey hesabı, akışla taşınan yüzey) ve köpük çizgileri (PhysX diffuse parçacıkları: köpük, sıçrama, kabarcık; akış yönünde uzayan köpük izleri).
+- **0.3.0 (yayınlandı):** Akan su kovası (sürekli su kaynağı), otomatik büyüyen parçacık tamponu (pratikte sınırsız, `particleLimit`), ekran uzayı yansımaları, kostikler; kendi su shader'ı (kırılma, piksel bazında derinliğe göre renk ve berraklık, dalgacıklar, gökyüzü yansıması, güneş parlaması); basit çizimde de köşe noktası bazında derinlik rengi; varsayılan kalite `high`.
 - **Aday (0.3.0):** Suda yüzen cisimler (tekne, eşya) — v1 planında "olmayacaklar" listesindeydi, kullanıcı onayıyla ele alınacak.
