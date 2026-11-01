@@ -3,6 +3,13 @@
 All notable changes to Inertia are documented here. Versioning rules are described in
 [PLAN.md](PLAN.md#5-sürümleme).
 
+## [0.4.3] — Beta
+
+### Fixed
+- Foam no longer looks like thick white paint strokes: the shader draws it as a lacy web of fine
+  filaments at two scales, broken up into bubbles and gathering in patches, with soft,
+  semi-transparent edges. (The pattern was tuned with an offline replica of the shader.)
+
 ## [0.4.2] — Beta
 
 ### Fixed

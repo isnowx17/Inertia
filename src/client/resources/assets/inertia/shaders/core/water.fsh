@@ -247,13 +247,19 @@ void main() {
 
     vec3 color = mix(body, reflectionColor, fresnel) + sunColor;
 
-    // Foam: churned, fast-moving water gets a marbled web of white foam lines.
-    // The amount of foam decides how many of the web's lines show, never a solid white sheet.
-    float web = causticLayer(worldPosition.xz * 1.1 + vec2(time * 0.05, -time * 0.04), time * 0.35);
+    // Foam: a lacy web of fine filaments at two scales, broken up into bubbles, gathering in
+    // patches. The amount of foam decides how much of the web shows; it never becomes a solid sheet.
+    vec2 foamUv = worldPosition.xz;
+    float web1 = causticLayer(foamUv * 2.2 + vec2(time * 0.05, -time * 0.04), time * 0.35);
+    float web2 = causticLayer(foamUv * 5.0 + vec2(-time * 0.08, time * 0.07), time * 0.5);
+    float bubbles = noised(foamUv * 16.0 + vec2(time * 0.3, -time * 0.2)).x;
+    float patches = noised(foamUv * 0.7 + vec2(time * 0.03, 0.0)).x;
+    float pattern = pow(max(web1, web2 * 0.7), 0.6) * (0.7 + 0.3 * bubbles);
     float churn = clamp(foam, 0.0, 1.0);
-    float lines = smoothstep(0.55 - churn * 0.35, 0.75 - churn * 0.25, web);
-    float foamAmount = lines * smoothstep(0.02, 0.35, churn);
-    color = mix(color, vec3(0.95, 0.97, 1.0) * diffuseLight * lightMapColor.rgb, foamAmount * 0.75);
+    float cover = clamp(churn * (0.5 + patches), 0.0, 1.0);
+    float foamThreshold = 0.78 - cover * 0.5;
+    float foamAmount = smoothstep(foamThreshold, foamThreshold + 0.3, pattern) * smoothstep(0.03, 0.3, churn);
+    color = mix(color, vec3(0.95, 0.97, 1.0) * diffuseLight * lightMapColor.rgb, foamAmount * 0.7);
 
     // Soft shoreline: very thin water fades into the ground instead of ending in a hard edge.
     float edge = smoothstep(0.0, TextureMat[1].w, distanceInWater + fresnel * 0.2 + foamAmount);
