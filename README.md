@@ -39,17 +39,18 @@ bucket are unchanged. The water is not saved: it disappears when you leave the w
 
 | Setting | Default | Meaning |
 |---|---|---|
-| `maxParticles` | 65536 | Water particles alive at once (4096 – 1048576). |
-| `particleSpacing` | 0.125 | Distance between particles in blocks. 0.125 = 512 particles per block. |
+| `quality` | `medium` | `low`, `medium`, `high`, `ultra` or `custom`; see below. |
 | `despawnDistance` | 96 | Water further away from you than this is removed. |
-| `substepsPerTick` | 3 | Simulation steps per game tick; higher is more stable but slower. |
 | `playerInteraction` | true | Whether water pushes, slows and lifts the player. |
 | `renderMode` | `surface` | `surface`: one continuous water surface. `particles`: every particle as a sphere. |
-| `surfaceResolution` | 1.5 | Surface grid size relative to the spacing; smaller is more detailed but slower. |
-| `surfaceSmoothness` | 3.0 | Surface smoothing radius relative to the spacing. |
+| `surfaceSmoothness` | 2.0 | Surface smoothing radius relative to the surface cell size. |
 | `surfaceThreshold` | 0.3 | Surface level as a fraction of still-water density. |
-| `renderScale` | 1.6 | Size of particles / spray droplets relative to the spacing. |
+| `renderScale` | 1.6 | Size of spray droplets and foam relative to the particle spacing. |
 | `renderOpacity` | 0.6 | Opacity of the water when looking straight into it. |
+| `foam` | true | Simulate and draw foam, spray and bubbles. |
+| `foamAmount` | 0.6 | How easily foam forms, 0–1. |
+| `foamLifetime` | 2.5 | Seconds foam lives; longer-lived foam forms longer streaks. |
+| `foamSize` | 1.0 | Size of the foam streaks. |
 | `waterFriction` | 0.3 | Friction against blocks; higher makes water pool instead of sliding away. |
 | `waterDamping` | 0.05 | Velocity damping. |
 | `waterViscosity` | 0.01 | Viscosity; very high values feel like honey. |
@@ -57,7 +58,17 @@ bucket are unchanged. The water is not saved: it disappears when you leave the w
 | `waterCohesion` | 0.02 | Cohesion; high values make thin water bead up. |
 | `waterVorticity` | 4 | Keeps swirls alive. |
 
-With the defaults about 128 blocks of water can exist at the same time.
+Quality levels (a bucket is always one block of water; changes apply after restarting the game):
+
+| `quality` | Particles per block | Max particles | Surface cell | Sub-steps |
+|---|---|---|---|---|
+| `low` | 512 | 65,536 | 0.19 blocks | 2 |
+| `medium` | 1000 | 131,072 | 0.15 blocks | 3 |
+| `high` | 1728 | 262,144 | 0.125 blocks | 3 |
+| `ultra` | 4096 | 524,288 | 0.1 blocks | 4 |
+| `custom` | from `particleSpacing` | `maxParticles` | `surfaceCellSize` | `substepsPerTick` |
+
+On every quality level about 128 blocks of water can exist at the same time.
 
 ## Building
 
@@ -87,10 +98,13 @@ jars, creates the tag `v<version>` and publishes the release.
   Full blocks are greedily merged into large boxes, partial blocks use their collision boxes.
 - **Player:** a kinematic box keeps the water out of the player; the force of the water on the
   player is computed from the particles around them.
-- **Rendering:** a background thread builds one continuous water surface from the particles
-  (surface nets over a smoothed particle density field) as often as it can; the render thread
-  always draws the newest surface, shaded with Fresnel reflection, biome colour, block light and
-  foam. Isolated splashes are drawn as small droplets.
+- **Rendering:** a background job builds one continuous water surface from the particles
+  (surface nets over a smoothed particle density field, in parallel on all spare cores) as often
+  as it can; the render thread draws the newest surface, moved along the flow since it was built,
+  shaded with Fresnel reflection, biome colour and block light. Isolated splashes are drawn as
+  small droplets.
+- **Foam:** PhysX diffuse particles (foam, spray, bubbles) spawn where the water splashes or
+  churns and are drawn as soft streaks stretched along the flow.
 
 See [PLAN.md](PLAN.md) for scope and versioning, and [CHANGELOG.md](CHANGELOG.md) for changes.
 

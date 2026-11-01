@@ -6,8 +6,9 @@
   "message.inertia.singleplayer_only": "Inertia: fluid physics only works in singleplayer",
   "message.inertia.limit_reached": "Inertia: particle limit reached (%s). Use /inertia clear or raise maxParticles in config/inertia.json",
   "message.inertia.failed": "Inertia: the fluid simulation stopped because of an error. See the log for details.",
+  "command.inertia.info.quality": "Quality: %s",
   "command.inertia.info.physx": "PhysX: %s (%s)",
   "command.inertia.info.idle": "Fluid simulation: not running",
-  "command.inertia.info.simulation": "Fluid simulation: %s / %s particles, %s collision sections, %s ms per tick",
+  "command.inertia.info.simulation": "Fluid simulation: %s / %s particles, %s foam particles, %s collision sections, %s ms per tick",
   "command.inertia.clear": "Removed %s water particles"
 }

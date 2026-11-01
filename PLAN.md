@@ -79,3 +79,9 @@ Kurallar:
 - Sürüm numarası tek bir yerde tutulur: `gradle.properties` (`mod_version`).
 - Jar adı: `inertia-<sürüm>+<minecraft sürümü>-<platform>.jar` (ör. `inertia-0.1.0+26.3-windows.jar`).
 - Her sürümün değişiklikleri `CHANGELOG.md` dosyasına yazılır.
+
+## 6. Sonraki sürümler
+
+- **0.2.0 (geliştiriliyor):** Daha ince detay (kalite seviyeleri: low / medium / high / ultra, daha ince yüzey ızgarası, çok çekirdekli yüzey hesabı, akışla taşınan yüzey) ve köpük çizgileri (PhysX diffuse parçacıkları: köpük, sıçrama, kabarcık; akış yönünde uzayan köpük izleri).
+- **Aday:** Kendi su shader'ı (kırılma, derinliğe göre renk, dalgacık, güneş parlaması).
+- **Aday (0.3.0):** Suda yüzen cisimler (tekne, eşya) — v1 planında "olmayacaklar" listesindeydi, kullanıcı onayıyla ele alınacak.
