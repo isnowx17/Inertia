@@ -13,6 +13,7 @@ import io.github.isnowx17.inertia.client.fluid.FluidManager;
 import io.github.isnowx17.inertia.client.fluid.FluidSimulation;
 import io.github.isnowx17.inertia.util.FluidSurfaceMesher;
 import it.unimi.dsi.fastutil.longs.Long2IntOpenHashMap;
+import java.nio.ByteBuffer;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ForkJoinPool;
@@ -74,6 +75,8 @@ public final class FluidSurfaceRenderer {
 	private static final float FOAM_MAX_DENSITY = 1.6f;
 	/** Light is sampled this far above / along the normal, so geometry touching blocks is not black. */
 	private static final float LIGHT_PROBE_OFFSET = 0.35f;
+	/** Distance (blocks) foam is moved towards the camera when drawn over the shader water. */
+	private static final float FOAM_DEPTH_PULL = 0.2f;
 	/** Foam fades out during its last this many seconds of life. */
 	private static final float FOAM_FADE = 0.8f;
 
@@ -169,8 +172,9 @@ public final class FluidSurfaceRenderer {
 		// foam positions are from the newest tick, so shift them back by that tick to stay in sync.
 		float foamDt = paused ? -TICK_SECONDS : Mth.clamp((now - result.foamNanos) / 1.0e9f - TICK_SECONDS, -TICK_SECONDS, MAX_EXTRAPOLATION);
 
+		boolean shader = config.waterShader && waterPass.isAvailable();
 		if (!result.mesh.isEmpty()) {
-			if (config.waterShader && waterPass.isAvailable()) {
+			if (shader) {
 				pendingShaderSurface = prepareSurface(level, result, cam, meshDt, waterColor, config.renderOpacity, true);
 				pendingWaterColor = waterColor;
 				pendingCamera = cam;
@@ -178,13 +182,27 @@ public final class FluidSurfaceRenderer {
 				submitSurface(context, level, result, cam, meshDt, waterColor, config.renderOpacity);
 			}
 		}
+		QuadBatch droplets = null;
 		if (result.dropletCount > 0) {
 			float radius = result.spacing * config.renderScale * 0.5f * DROPLET_SCALE;
-			submitDroplets(context, level, result, cam, meshDt, camera.orientation, radius, waterColor, config.renderOpacity);
+			droplets = prepareDroplets(level, result, cam, meshDt, camera.orientation, radius, waterColor, config.renderOpacity);
 		}
+		QuadBatch foam = null;
 		if (result.foamCount > 0) {
 			float size = result.spacing * config.renderScale * 0.45f * config.foamSize;
-			submitFoam(context, level, result, cam, foamDt, size);
+			// With the shader the water surface is in the depth buffer when foam is drawn; pull the foam
+			// slightly towards the camera so foam floating just below the surface stays visible.
+			foam = prepareFoam(level, result, cam, foamDt, size, shader ? FOAM_DEPTH_PULL : 0f);
+		}
+
+		if (shader) {
+			// Drawn after the water by WaterPass, so their soft edges blend with the water.
+			pendingDroplets = droplets;
+			pendingFoam = foam;
+			pendingCamera = cam;
+		} else {
+			submitQuads(context, dropletType, droplets);
+			submitQuads(context, foamType, foam);
 		}
 	}
 
@@ -443,88 +461,173 @@ public final class FluidSurfaceRenderer {
 
 	/** Surface waiting to be drawn by the water shader at the end of the main pass. */
 	private SurfaceFrame pendingShaderSurface;
+	private QuadBatch pendingDroplets;
+	private QuadBatch pendingFoam;
 	private int pendingWaterColor;
 	private Vec3 pendingCamera;
+	private final ByteBufferBuilder dropletVertexBytes = new ByteBufferBuilder(1 << 16);
+	private final ByteBufferBuilder foamVertexBytes = new ByteBufferBuilder(1 << 18);
 
-	/** Called at {@code END_MAIN}: draws the surface collected this frame with the water shader. */
+	/** Called at {@code END_MAIN}: draws the surface, spray and foam collected this frame. */
 	public void drawShaderSurface(LevelRenderContext context) {
 		SurfaceFrame frame = pendingShaderSurface;
+		QuadBatch droplets = pendingDroplets;
+		QuadBatch foam = pendingFoam;
 		pendingShaderSurface = null;
-		if (frame == null || frame.quadCount() == 0) {
+		pendingDroplets = null;
+		pendingFoam = null;
+		boolean hasWater = frame != null && frame.quadCount() > 0;
+		boolean hasDroplets = droplets != null && droplets.count() > 0;
+		boolean hasFoam = foam != null && foam.count() > 0;
+		if (!hasWater && !hasDroplets && !hasFoam) {
 			return;
 		}
 
+		MeshData water = null;
+		MeshData dropletMesh = null;
+		MeshData foamMesh = null;
 		try {
-			BufferBuilder builder = new BufferBuilder(shaderVertexBytes, PrimitiveTopology.QUADS, DefaultVertexFormat.ENTITY);
-			for (int q = 0; q < frame.quadCount(); q++) {
-				for (int k = 0; k < 4; k++) {
-					int i = frame.quads()[q * 4 + k];
-					builder.addVertex(frame.positions()[i * 3], frame.positions()[i * 3 + 1], frame.positions()[i * 3 + 2])
-						.setColor(frame.colors()[i])
-						.setUv(frame.foam()[i], frame.thickness()[i])
-						.setOverlay(OverlayTexture.NO_OVERLAY)
-						.setLight(frame.lights()[i])
-						.setNormal(frame.normals()[i * 3], frame.normals()[i * 3 + 1], frame.normals()[i * 3 + 2]);
+			if (hasWater) {
+				BufferBuilder builder = new BufferBuilder(shaderVertexBytes, PrimitiveTopology.QUADS, DefaultVertexFormat.ENTITY);
+				for (int q = 0; q < frame.quadCount(); q++) {
+					for (int k = 0; k < 4; k++) {
+						int i = frame.quads()[q * 4 + k];
+						builder.addVertex(frame.positions()[i * 3], frame.positions()[i * 3 + 1], frame.positions()[i * 3 + 2])
+							.setColor(frame.colors()[i])
+							.setUv(frame.foam()[i], frame.thickness()[i])
+							.setOverlay(OverlayTexture.NO_OVERLAY)
+							.setLight(frame.lights()[i])
+							.setNormal(frame.normals()[i * 3], frame.normals()[i * 3 + 1], frame.normals()[i * 3 + 2]);
+					}
 				}
+				water = builder.build();
 			}
-			try (MeshData meshData = builder.build()) {
-				if (meshData == null) {
-					return;
-				}
-				InertiaConfig config = manager.config();
-				var sky = context.levelState().skyRenderState;
-				float sunAngle = sky.sunAngle;
-				Vector3f sunDirection = new Vector3f(-Mth.sin(sunAngle), Mth.cos(sunAngle), 0f);
-				float daylight = Mth.clamp(sunDirection.y * 4f + 0.2f, 0f, 1f) * Mth.clamp(sky.rainBrightness, 0f, 1f);
-				Vec3 cam = pendingCamera;
-				Vector3f cameraWrap = new Vector3f((float) (cam.x % 4096.0), (float) (cam.y % 4096.0), (float) (cam.z % 4096.0));
+			if (hasDroplets) {
+				dropletMesh = buildQuads(dropletVertexBytes, droplets);
+			}
+			if (hasFoam) {
+				foamMesh = buildQuads(foamVertexBytes, foam);
+			}
 
-				int deep = darken(pendingWaterColor, 0.35f);
-				org.joml.Vector3fc skyColor = sky.skyColor;
-				Matrix4f parameters = new Matrix4f()
-					.m00((System.nanoTime() / 1.0e9f) % 3600f)
-					.m01(config.rippleStrength)
-					.m02(0.06f * config.refractionStrength)
-					.m03(config.waterAbsorption)
-					.m10(((deep >> 16) & 0xFF) / 255f)
-					.m11(((deep >> 8) & 0xFF) / 255f)
-					.m12((deep & 0xFF) / 255f)
-					.m13(0.08f)
-					.m20(skyColor != null ? skyColor.x() : 0f)
-					.m21(skyColor != null ? skyColor.y() : 0f)
-					.m22(skyColor != null ? skyColor.z() : 0f)
-					.m23(skyColor != null ? 1f : 0f)
-					.m30(0f).m31(0f).m32(0f).m33(1f);
-				waterPass.draw(meshData.vertexBuffer(), meshData.drawState().indexCount(), sunDirection, daylight, cameraWrap, parameters);
+			java.util.List<WaterPass.Overlay> overlays = new java.util.ArrayList<>(2);
+			if (dropletMesh != null) {
+				overlays.add(new WaterPass.Overlay(dropletMesh.vertexBuffer(), dropletMesh.drawState().indexCount(), DROPLET_TEXTURE));
 			}
+			if (foamMesh != null) {
+				overlays.add(new WaterPass.Overlay(foamMesh.vertexBuffer(), foamMesh.drawState().indexCount(), FOAM_TEXTURE));
+			}
+
+			InertiaConfig config = manager.config();
+			var sky = context.levelState().skyRenderState;
+			float sunAngle = sky.sunAngle;
+			Vector3f sunDirection = new Vector3f(-Mth.sin(sunAngle), Mth.cos(sunAngle), 0f);
+			float daylight = Mth.clamp(sunDirection.y * 4f + 0.2f, 0f, 1f) * Mth.clamp(sky.rainBrightness, 0f, 1f);
+			Vec3 cam = pendingCamera;
+			Vector3f cameraWrap = new Vector3f((float) (cam.x % 4096.0), (float) (cam.y % 4096.0), (float) (cam.z % 4096.0));
+
+			int deep = darken(pendingWaterColor, 0.35f);
+			org.joml.Vector3fc skyColor = sky.skyColor;
+			Matrix4f parameters = new Matrix4f()
+				.m00((System.nanoTime() / 1.0e9f) % 3600f)
+				.m01(config.rippleStrength)
+				.m02(0.06f * config.refractionStrength)
+				.m03(config.waterAbsorption)
+				.m10(((deep >> 16) & 0xFF) / 255f)
+				.m11(((deep >> 8) & 0xFF) / 255f)
+				.m12((deep & 0xFF) / 255f)
+				.m13(0.08f)
+				.m20(skyColor != null ? skyColor.x() : 0f)
+				.m21(skyColor != null ? skyColor.y() : 0f)
+				.m22(skyColor != null ? skyColor.z() : 0f)
+				.m23(skyColor != null ? 1f : 0f)
+				.m30(0f).m31(0f).m32(0f).m33(1f);
+
+			ByteBuffer waterVertices = water != null ? water.vertexBuffer() : ByteBuffer.allocateDirect(0);
+			int waterIndices = water != null ? water.drawState().indexCount() : 0;
+			waterPass.draw(waterVertices, waterIndices, overlays, sunDirection, daylight, cameraWrap, parameters);
 		} catch (Throwable t) {
 			Inertia.LOGGER.error("Water shader failed; switching to the simple water rendering", t);
 			waterPass.markFailed();
+		} finally {
+			if (water != null) {
+				water.close();
+			}
+			if (dropletMesh != null) {
+				dropletMesh.close();
+			}
+			if (foamMesh != null) {
+				foamMesh.close();
+			}
 		}
 	}
 
-	private void submitDroplets(
-		LevelRenderContext context, ClientLevel level, Result result, Vec3 cam, float dt, Quaternionf orientation,
-		float radius, int waterColor, float opacity
+	private static MeshData buildQuads(ByteBufferBuilder bytes, QuadBatch batch) {
+		BufferBuilder builder = new BufferBuilder(bytes, PrimitiveTopology.QUADS, DefaultVertexFormat.ENTITY);
+		for (int i = 0; i < batch.count(); i++) {
+			int c = i * 12;
+			int color = batch.colors()[i];
+			int light = batch.lights()[i];
+			float nx = batch.normals()[i * 3];
+			float ny = batch.normals()[i * 3 + 1];
+			float nz = batch.normals()[i * 3 + 2];
+			float[] p = batch.corners();
+			quadCorner(builder, p[c], p[c + 1], p[c + 2], color, 0f, 1f, light, nx, ny, nz);
+			quadCorner(builder, p[c + 3], p[c + 4], p[c + 5], color, 1f, 1f, light, nx, ny, nz);
+			quadCorner(builder, p[c + 6], p[c + 7], p[c + 8], color, 1f, 0f, light, nx, ny, nz);
+			quadCorner(builder, p[c + 9], p[c + 10], p[c + 11], color, 0f, 0f, light, nx, ny, nz);
+		}
+		return builder.build();
+	}
+
+	private static void quadCorner(
+		BufferBuilder builder, float x, float y, float z, int color, float u, float v, int light, float nx, float ny, float nz
+	) {
+		builder.addVertex(x, y, z)
+			.setColor(color)
+			.setUv(u, v)
+			.setOverlay(OverlayTexture.NO_OVERLAY)
+			.setLight(light)
+			.setNormal(nx, ny, nz);
+	}
+
+	// ------------------------------------------------------------------------------------------
+	// Spray and foam quads
+	// ------------------------------------------------------------------------------------------
+
+	/** Camera-relative quads: four corners (12 floats), colour, light and normal per quad. */
+	private record QuadBatch(float[] corners, int[] colors, int[] lights, float[] normals, int count) {
+	}
+
+	/** Submits quads to the vanilla translucent entity pipeline (simple rendering). */
+	private static void submitQuads(LevelRenderContext context, RenderType type, QuadBatch batch) {
+		if (batch == null || batch.count() == 0) {
+			return;
+		}
+		context.submitNodeCollector().submitCustomGeometry(new PoseStack(), type, (pose, buffer) -> {
+			float[] p = batch.corners();
+			for (int i = 0; i < batch.count(); i++) {
+				int c = i * 12;
+				int color = batch.colors()[i];
+				int light = batch.lights()[i];
+				float nx = batch.normals()[i * 3];
+				float ny = batch.normals()[i * 3 + 1];
+				float nz = batch.normals()[i * 3 + 2];
+				corner(buffer, pose, p[c], p[c + 1], p[c + 2], color, 0f, 1f, light, nx, ny, nz);
+				corner(buffer, pose, p[c + 3], p[c + 4], p[c + 5], color, 1f, 1f, light, nx, ny, nz);
+				corner(buffer, pose, p[c + 6], p[c + 7], p[c + 8], color, 1f, 0f, light, nx, ny, nz);
+				corner(buffer, pose, p[c + 9], p[c + 10], p[c + 11], color, 0f, 0f, light, nx, ny, nz);
+			}
+		});
+	}
+
+	private QuadBatch prepareDroplets(
+		ClientLevel level, Result result, Vec3 cam, float dt, Quaternionf orientation, float radius, int waterColor, float opacity
 	) {
 		int count = result.dropletCount;
 		float[] d = result.droplets;
 		float offX = (float) (result.originX - cam.x);
 		float offY = (float) (result.originY - cam.y);
 		float offZ = (float) (result.originZ - cam.z);
-		float[] pos = new float[count * 3];
-		int[] lights = new int[count];
-		BlockPos.MutableBlockPos block = new BlockPos.MutableBlockPos();
-		for (int i = 0; i < count; i++) {
-			float lx = d[i * 6] + d[i * 6 + 3] * dt;
-			float ly = d[i * 6 + 1] + d[i * 6 + 4] * dt;
-			float lz = d[i * 6 + 2] + d[i * 6 + 5] * dt;
-			pos[i * 3] = lx + offX;
-			pos[i * 3 + 1] = ly + offY;
-			pos[i * 3 + 2] = lz + offZ;
-			lights[i] = light(level, block,
-				Mth.floor(lx) + result.originX, Mth.floor(ly + LIGHT_PROBE_OFFSET) + result.originY, Mth.floor(lz) + result.originZ);
-		}
 
 		Quaternionf q = new Quaternionf(orientation);
 		Vector3f right = q.transform(new Vector3f(radius, 0, 0));
@@ -533,25 +636,46 @@ public final class FluidSurfaceRenderer {
 		int alpha = Mth.clamp(Math.round(opacity * 255f), 40, 255);
 		int color = (alpha << 24) | lerpRgb(waterColor, FOAM_COLOR, 0.35f);
 
-		context.submitNodeCollector().submitCustomGeometry(new PoseStack(), dropletType, (pose, buffer) -> {
-			for (int i = 0; i < count; i++) {
-				float x = pos[i * 3];
-				float y = pos[i * 3 + 1];
-				float z = pos[i * 3 + 2];
-				int light = lights[i];
-				corner(buffer, pose, x - right.x - up.x, y - right.y - up.y, z - right.z - up.z, color, 0f, 1f, light, normal.x, normal.y, normal.z);
-				corner(buffer, pose, x + right.x - up.x, y + right.y - up.y, z + right.z - up.z, color, 1f, 1f, light, normal.x, normal.y, normal.z);
-				corner(buffer, pose, x + right.x + up.x, y + right.y + up.y, z + right.z + up.z, color, 1f, 0f, light, normal.x, normal.y, normal.z);
-				corner(buffer, pose, x - right.x + up.x, y - right.y + up.y, z - right.z + up.z, color, 0f, 0f, light, normal.x, normal.y, normal.z);
-			}
-		});
+		float[] corners = new float[count * 12];
+		int[] colors = new int[count];
+		int[] lights = new int[count];
+		float[] normals = new float[count * 3];
+		BlockPos.MutableBlockPos block = new BlockPos.MutableBlockPos();
+		for (int i = 0; i < count; i++) {
+			float lx = d[i * 6] + d[i * 6 + 3] * dt;
+			float ly = d[i * 6 + 1] + d[i * 6 + 4] * dt;
+			float lz = d[i * 6 + 2] + d[i * 6 + 5] * dt;
+			float x = lx + offX;
+			float y = ly + offY;
+			float z = lz + offZ;
+			int c = i * 12;
+			corners[c] = x - right.x - up.x;
+			corners[c + 1] = y - right.y - up.y;
+			corners[c + 2] = z - right.z - up.z;
+			corners[c + 3] = x + right.x - up.x;
+			corners[c + 4] = y + right.y - up.y;
+			corners[c + 5] = z + right.z - up.z;
+			corners[c + 6] = x + right.x + up.x;
+			corners[c + 7] = y + right.y + up.y;
+			corners[c + 8] = z + right.z + up.z;
+			corners[c + 9] = x - right.x + up.x;
+			corners[c + 10] = y - right.y + up.y;
+			corners[c + 11] = z - right.z + up.z;
+			colors[i] = color;
+			normals[i * 3] = normal.x;
+			normals[i * 3 + 1] = normal.y;
+			normals[i * 3 + 2] = normal.z;
+			lights[i] = light(level, block,
+				Mth.floor(lx) + result.originX, Mth.floor(ly + LIGHT_PROBE_OFFSET) + result.originY, Mth.floor(lz) + result.originZ);
+		}
+		return new QuadBatch(corners, colors, lights, normals, count);
 	}
 
 	/**
 	 * Foam is drawn as soft streaks: each particle becomes a quad facing the camera whose long axis
 	 * follows the flow (as seen from the camera) and whose length grows with the flow speed.
 	 */
-	private void submitFoam(LevelRenderContext context, ClientLevel level, Result result, Vec3 cam, float dt, float size) {
+	private QuadBatch prepareFoam(ClientLevel level, Result result, Vec3 cam, float dt, float size, float pull) {
 		int count = result.foamCount;
 		float[] f = result.foam;
 		float offX = (float) (result.originX - cam.x);
@@ -590,6 +714,10 @@ public final class FluidSurfaceRenderer {
 			float ex = px / dist;
 			float ey = py / dist;
 			float ez = pz / dist;
+			float shift = Math.min(pull, dist * 0.5f);
+			px -= ex * shift;
+			py -= ey * shift;
+			pz -= ez * shift;
 
 			// Flow projected onto the screen plane gives the streak direction.
 			float along = vx * ex + vy * ey + vz * ez;
@@ -651,24 +779,7 @@ public final class FluidSurfaceRenderer {
 			drawn++;
 		}
 
-		if (drawn == 0) {
-			return;
-		}
-		int total = drawn;
-		context.submitNodeCollector().submitCustomGeometry(new PoseStack(), foamType, (pose, buffer) -> {
-			for (int i = 0; i < total; i++) {
-				int c = i * 12;
-				int color = colors[i];
-				int light = lights[i];
-				float nx = normals[i * 3];
-				float ny = normals[i * 3 + 1];
-				float nz = normals[i * 3 + 2];
-				corner(buffer, pose, corners[c], corners[c + 1], corners[c + 2], color, 0f, 1f, light, nx, ny, nz);
-				corner(buffer, pose, corners[c + 3], corners[c + 4], corners[c + 5], color, 1f, 1f, light, nx, ny, nz);
-				corner(buffer, pose, corners[c + 6], corners[c + 7], corners[c + 8], color, 1f, 0f, light, nx, ny, nz);
-				corner(buffer, pose, corners[c + 9], corners[c + 10], corners[c + 11], color, 0f, 0f, light, nx, ny, nz);
-			}
-		});
+		return new QuadBatch(corners, colors, lights, normals, drawn);
 	}
 
 	private static void corner(

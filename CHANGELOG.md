@@ -20,6 +20,9 @@ All notable changes to Inertia are documented here. Versioning rules are describ
 - The simple rendering also got depth-dependent colour and transparency (per-vertex water depth).
 - Config: `waterShader`, `rippleStrength`, `refractionStrength`, `waterAbsorption`.
 - `/inertia info` shows whether the water shader is active.
+- With the water shader, foam and spray are drawn after the water surface, so their soft edges
+  blend with the water instead of the ground below it (foam no longer has green grass edges).
+  Foam just below the surface is pulled slightly towards the camera so it stays visible.
 - Shader compile test: the shaders are compiled with shaderc and cross-compiled with SPIRV-Cross
   in the unit tests, exactly like Minecraft does, so shader errors are caught without a GPU.
 
