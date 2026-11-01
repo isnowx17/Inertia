@@ -23,13 +23,14 @@ import org.joml.Quaternionf;
 import org.joml.Vector3f;
 
 /**
- * Draws the water particles as camera-facing, sphere-shaded sprites.
+ * Draws every water particle as a camera-facing, sphere-shaded sprite ({@code renderMode =
+ * "particles"}). The default is {@link FluidSurfaceRenderer}.
  *
  * <p>Positions are interpolated between the last two simulation ticks so the water moves smoothly
  * at any frame rate. Particles take the biome water colour and the light level of their block, and
  * fast-moving particles turn lighter to suggest foam and spray.
  */
-public final class FluidRenderer {
+public final class FluidParticleRenderer {
 	private static final Identifier TEXTURE = Inertia.id("textures/fluid/particle.png");
 	/** Speed (blocks/second) at which particles are drawn fully foam-coloured. */
 	private static final float FOAM_SPEED = 8f;
@@ -43,7 +44,7 @@ public final class FluidRenderer {
 	private int[] colorData = new int[0];
 	private int[] lightData = new int[0];
 
-	public FluidRenderer(FluidManager manager) {
+	public FluidParticleRenderer(FluidManager manager) {
 		this.manager = manager;
 	}
 

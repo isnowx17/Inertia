@@ -3,6 +3,21 @@
 All notable changes to Inertia are documented here. Versioning rules are described in
 [PLAN.md](PLAN.md#5-sürümleme).
 
+## [0.1.1] — Beta
+
+### Fixed
+- Water is now drawn as one continuous, smooth water surface instead of separate balls. The
+  surface is rebuilt from the particles on a background thread (surface nets over a particle
+  density field), with Fresnel reflection, biome water colour, block light and foam on fast water.
+  Isolated splashes are drawn as small spray droplets.
+- Thin water no longer breaks up into scattered beads: lower cohesion and surface tension, more
+  friction against blocks and a little viscosity make the water flow together and pool.
+
+### Added
+- Config: `renderMode` (`surface` or `particles`), `surfaceResolution`, `surfaceSmoothness`,
+  `surfaceThreshold`, and the water material (`waterFriction`, `waterDamping`, `waterViscosity`,
+  `waterSurfaceTension`, `waterCohesion`, `waterVorticity`).
+
 ## [0.1.0] — Beta
 
 First release. Minecraft 26.3, Fabric. Requires an NVIDIA GPU (CUDA) on Windows x64 or Linux x64.

@@ -5,7 +5,8 @@ import io.github.isnowx17.inertia.client.command.InertiaCommands;
 import io.github.isnowx17.inertia.client.config.InertiaConfig;
 import io.github.isnowx17.inertia.client.fluid.FluidManager;
 import io.github.isnowx17.inertia.client.physics.PhysXRuntime;
-import io.github.isnowx17.inertia.client.render.FluidRenderer;
+import io.github.isnowx17.inertia.client.render.FluidParticleRenderer;
+import io.github.isnowx17.inertia.client.render.FluidSurfaceRenderer;
 import io.github.isnowx17.inertia.item.FluidBucketItem;
 import net.fabricmc.api.ClientModInitializer;
 import net.fabricmc.fabric.api.client.command.v2.ClientCommandRegistrationCallback;
@@ -30,13 +31,20 @@ public final class InertiaClient implements ClientModInitializer {
 		PhysXRuntime.startAsync(loader.getGameDir().resolve(Inertia.MOD_ID).resolve("natives"));
 
 		fluids = new FluidManager(config);
-		FluidRenderer renderer = new FluidRenderer(fluids);
+		FluidSurfaceRenderer surfaceRenderer = new FluidSurfaceRenderer(fluids);
+		FluidParticleRenderer particleRenderer = new FluidParticleRenderer(fluids);
 
 		FluidBucketItem.setClientHandler(fluids::releaseWater);
 		ClientTickEvents.END_CLIENT_TICK.register(fluids::tick);
 		ClientPlayConnectionEvents.JOIN.register((handler, sender, client) -> fluids.onJoin(client));
 		ClientPlayConnectionEvents.DISCONNECT.register((handler, client) -> fluids.onDisconnect());
-		LevelRenderEvents.COLLECT_SUBMITS.register(renderer::collectSubmits);
+		LevelRenderEvents.COLLECT_SUBMITS.register(context -> {
+			if (config.renderSurface()) {
+				surfaceRenderer.collectSubmits(context);
+			} else {
+				particleRenderer.collectSubmits(context);
+			}
+		});
 		ClientCommandRegistrationCallback.EVENT.register((dispatcher, buildContext) -> InertiaCommands.register(dispatcher, fluids));
 	}
 }
