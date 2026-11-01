@@ -6,6 +6,18 @@ All notable changes to Inertia are documented here. Versioning rules are describ
 ## [Unreleased] — 0.3.0
 
 ### Added
+- **PhysX Flowing Water Bucket:** right-click a block face to start a continuous stream out of it
+  (sideways from a wall, a fountain from the ground, falling from a ceiling); right-click near a
+  source to stop it, sneak + right-click to stop all. Up to 16 sources. Same sprite as the water
+  bucket. Config: `sourceRadius`, `sourceSpeed`.
+- **No more small particle limit:** the GPU particle buffer starts at the quality level's size and
+  doubles automatically whenever the water outgrows it, up to `particleLimit` (default 2,097,152,
+  about 1200 blocks of water on `high`). More water costs frame rate.
+- **Reflections (shader):** screen-space reflections show blocks, terrain and entities around the
+  water on its surface; where the reflected ray leaves the screen the sky is reflected instead.
+- **Caustics (shader):** moving light patterns on the ground under the water, strongest in shallow
+  water and in daylight.
+- Config: `reflections`, `caustics`, `sunStrength`, `particleLimit`.
 - **Water shader.** The water surface is drawn with Inertia's own shader in a render pass after
   the main level pass:
   - **Refraction:** what is behind the water is seen through it, bent by the ripples.
@@ -30,6 +42,8 @@ All notable changes to Inertia are documented here. Versioning rules are describ
   in the unit tests, exactly like Minecraft does, so shader errors are caught without a GPU.
 
 ### Changed
+- Water colour: turquoise scattering in medium depths, a stronger and wider sun glint.
+- With many particles, collision bookkeeping samples a subset of particles per tick.
 - Default quality is now `high` (1728 particles per block). Config files that still had the old
   default `medium` are moved to `high`.
 

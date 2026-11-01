@@ -38,7 +38,9 @@ float viewDepth(float depth) {
     // For any perspective projection: clip.z = A * z + B, clip.w = -z.
     float a = ProjMat[2][2];
     float b = ProjMat[3][2];
-    return b / (ndcZ + a);
+    float denominator = ndcZ + a;
+    float distance = abs(denominator) < 1e-6 ? 1e6 : b / denominator;
+    return distance > 0.0 ? distance : 1e6;
 }
 
 float hash(vec2 p) {
@@ -85,6 +87,79 @@ vec2 rippleSlope(vec2 p, float t) {
     return slope;
 }
 
+// ---------------------------------------------------------------------------------------------
+// Caustics: bright, moving light lines on the ground under the water. Two layers of warped value
+// noise folded into thin ridges.
+// ---------------------------------------------------------------------------------------------
+float causticLayer(vec2 p, float t) {
+    vec3 warp = noised(p + vec2(t * 0.15, -t * 0.11));
+    vec2 q = p + warp.yz * 0.55;
+    float r = noised(q * 1.7 - vec2(t * 0.21, t * 0.13)).x;
+    return pow(1.0 - abs(r * 2.0 - 1.0), 7.0);
+}
+
+float caustics(vec2 p, float t) {
+    return causticLayer(p * 1.25, t) * 0.65 + causticLayer(p * 2.3 + vec2(3.7, 1.9), t * 1.31) * 0.45;
+}
+
+// ---------------------------------------------------------------------------------------------
+// Screen-space reflections: march the reflected ray through the copied depth buffer and, where it
+// hits something, reflect the colour of the scene there (walls, terrain, entities).
+// ---------------------------------------------------------------------------------------------
+vec2 projectToUv(vec3 viewPosition, bool flipY) {
+    vec4 clip = ProjMat * vec4(viewPosition, 1.0);
+    vec2 uv = clip.xy / clip.w * 0.5 + 0.5;
+    return flipY ? vec2(uv.x, 1.0 - uv.y) : uv;
+}
+
+bool insideScreen(vec2 uv) {
+    return uv.x > 0.0 && uv.x < 1.0 && uv.y > 0.0 && uv.y < 1.0;
+}
+
+// Returns the reflected scene colour (rgb) and how much it can be trusted (a).
+vec4 traceReflection(vec3 origin, vec3 direction, bool flipY) {
+    const float MAX_DISTANCE = 48.0;
+    float stepLength = 0.2;
+    float travelled = 0.0;
+    vec3 previous = origin;
+    for (int i = 0; i < 40; i++) {
+        vec3 current = previous + direction * stepLength;
+        travelled += stepLength;
+        if (current.z > -0.05 || travelled > MAX_DISTANCE) {
+            break; // behind the camera or too far
+        }
+        vec2 uv = projectToUv(current, flipY);
+        if (!insideScreen(uv)) {
+            break;
+        }
+        float behind = -current.z - viewDepth(texture(SceneDepth, uv).r);
+        if (behind > 0.0) {
+            if (behind > stepLength * 3.0 + 0.5) {
+                break; // passed behind a foreground object: no reliable hit
+            }
+            // Refine between the last point in front and the first point behind the surface.
+            vec3 front = previous;
+            vec3 back = current;
+            for (int j = 0; j < 5; j++) {
+                vec3 middle = (front + back) * 0.5;
+                vec2 middleUv = projectToUv(middle, flipY);
+                if (-middle.z - viewDepth(texture(SceneDepth, middleUv).r) > 0.0) {
+                    back = middle;
+                } else {
+                    front = middle;
+                }
+            }
+            vec2 hitUv = projectToUv(back, flipY);
+            vec2 edge = smoothstep(vec2(0.0), vec2(0.1), hitUv) * smoothstep(vec2(0.0), vec2(0.1), 1.0 - hitUv);
+            float confidence = edge.x * edge.y * (1.0 - travelled / MAX_DISTANCE);
+            return vec4(texture(SceneColor, hitUv).rgb, confidence);
+        }
+        previous = current;
+        stepLength *= 1.15;
+    }
+    return vec4(0.0);
+}
+
 void main() {
     float time = TextureMat[0][0];
     float rippleStrength = TextureMat[0][1];
@@ -125,10 +200,23 @@ void main() {
     // Light travelling through the water is absorbed, red first: shallow water is clear, deep water blue.
     float distanceInWater = max(sceneDepth - waterDepth, 0.0);
     distanceInWater = max(distanceInWater, surfaceParams.y * 0.25);
-    vec3 extinction = vec3(0.46, 0.11, 0.07) * absorption;
+    // Red is absorbed first, then green; blue travels furthest: shallow water is clear, deeper water
+    // turns turquoise and then deep blue.
+    vec3 extinction = vec3(0.42, 0.085, 0.065) * absorption;
     vec3 transmittance = exp(-extinction * distanceInWater);
     vec3 waterTint = vertexColor.rgb;
-    vec3 scattered = deepColor * 1.6 * diffuseLight * lightMapColor.rgb;
+    vec3 turquoise = vec3(0.05, 0.32, 0.38);
+    vec3 scattered = mix(deepColor * 1.6, turquoise, 0.45) * diffuseLight * lightMapColor.rgb;
+
+    // Caustics on the ground below the water. The point under the water lies on the same view ray,
+    // deeper by the ratio of the depths.
+    float causticStrength = TextureMat[3][1];
+    if (causticStrength > 0.0 && distanceInWater > 0.02) {
+        vec3 groundPosition = relativePosition * (sceneDepth / max(waterDepth, 1e-3)) + ModelOffset;
+        float pattern = caustics(groundPosition.xz, time);
+        float reach = smoothstep(0.03, 0.4, distanceInWater) * exp(-distanceInWater * 0.25);
+        behind *= 1.0 + pattern * causticStrength * 1.6 * reach * daylight * lightMapColor.g;
+    }
     vec3 body = behind * transmittance * mix(vec3(1.0), waterTint * 1.4, 0.2) + scattered * (1.0 - transmittance);
 
     // Reflection of the sky (the fog colour is the colour of the horizon) and the sun.
@@ -139,10 +227,25 @@ void main() {
     vec3 zenith = TextureMat[2].w > 0.5 ? TextureMat[2].rgb : FogColor.rgb * vec3(0.75, 0.85, 1.1);
     vec3 skyColor = mix(FogColor.rgb, zenith, smoothstep(0.0, 0.6, reflected.y));
     skyColor *= lightMapColor.rgb;
-    float sun = pow(max(dot(reflected, sunDirection), 0.0), 380.0) * 6.0 + pow(max(dot(reflected, sunDirection), 0.0), 40.0) * 0.25;
-    vec3 sunColor = vec3(1.0, 0.95, 0.85) * sun * daylight * lightMapColor.g;
 
-    vec3 color = mix(body, skyColor, fresnel) + sunColor;
+    // Reflect the surroundings where the reflected ray hits something on screen.
+    vec3 reflectionColor = skyColor;
+    if (TextureMat[3][0] > 0.5 && fresnel > 0.03) {
+        vec3 viewPosition = (ModelViewMat * vec4(relativePosition, 1.0)).xyz;
+        vec3 viewNormal = normalize(mat3(ModelViewMat) * rippled);
+        vec3 viewReflection = reflect(normalize(viewPosition), viewNormal);
+        // Screen-space y may point either way depending on the graphics backend: compare the
+        // projection of this very fragment with its real screen position.
+        vec2 selfUv = projectToUv(viewPosition, false);
+        bool flipY = abs(selfUv.y - screenUv.y) > abs((1.0 - selfUv.y) - screenUv.y);
+        vec4 hit = traceReflection(viewPosition, viewReflection, flipY);
+        reflectionColor = mix(skyColor, hit.rgb, hit.a);
+    }
+    float sunDot = max(dot(reflected, sunDirection), 0.0);
+    float sun = pow(sunDot, 500.0) * 9.0 + pow(sunDot, 60.0) * 0.6 + pow(sunDot, 8.0) * 0.08;
+    vec3 sunColor = vec3(1.0, 0.95, 0.85) * sun * daylight * TextureMat[3][2] * lightMapColor.g;
+
+    vec3 color = mix(body, reflectionColor, fresnel) + sunColor;
 
     // Foam: churned water turns white, broken up by noise.
     float foamNoise = noised(worldPosition.xz * 6.0 + vec2(time * 0.5)).x;

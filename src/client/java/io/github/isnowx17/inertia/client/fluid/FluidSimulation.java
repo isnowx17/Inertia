@@ -58,45 +58,50 @@ public final class FluidSimulation implements AutoCloseable {
 	private static final int U32_BYTES = 4;
 	/** Particles more than this far below the world bottom are removed. */
 	private static final int BELOW_WORLD_MARGIN = 16;
+	/** Particles sampled per tick to find where collision geometry is needed. */
+	private static final int TERRAIN_SAMPLES = 131_072;
 
 	private final InertiaConfig config;
 	private final FluidParameters params;
-	private final int capacity;
+	/** Current size of the particle buffer; grows by doubling up to {@link #limit}. */
+	private int capacity;
+	/** Hard ceiling for the particle count (GPU memory and frame time). */
+	private final int limit;
 
 	private final PxCudaContextManager cuda;
 	private final PxScene scene;
 	private final PxPBDMaterial material;
 	private final PxPBDParticleSystem particleSystem;
-	private final PxParticleBuffer buffer;
+	private PxParticleBuffer buffer;
 	/** Same object as {@link #buffer} when foam is enabled, otherwise {@code null}. */
-	private final PxParticleAndDiffuseBuffer diffuseBuffer;
+	private PxParticleAndDiffuseBuffer diffuseBuffer;
 	private final int substeps;
 	private final int phase;
 
 	// Pinned host staging memory, accessed from Java through direct buffers.
-	private final PxVec4 hostPositions;
-	private final PxVec4 hostVelocities;
-	private final NativeObject hostPhases;
-	private final PxVec4 hostDiffuse;
-	private final FloatBuffer hostDiffuseView;
-	private final int maxFoam;
+	private PxVec4 hostPositions;
+	private PxVec4 hostVelocities;
+	private NativeObject hostPhases;
+	private PxVec4 hostDiffuse;
+	private FloatBuffer hostDiffuseView;
+	private int maxFoam;
 
 	// Foam/spray/bubble particles after the latest tick: xyz + remaining lifetime per particle.
 	private float[] foam = new float[0];
 	private int foamCount;
 	private long foamHiddenUntilTick;
 	private long readBackNanos;
-	private final FloatBuffer hostPos;
-	private final FloatBuffer hostVel;
+	private FloatBuffer hostPos;
+	private FloatBuffer hostVel;
 
-	private final long devicePositions;
-	private final long deviceVelocities;
-	private final long devicePhases;
+	private long devicePositions;
+	private long deviceVelocities;
+	private long devicePhases;
 
 	// Java-side copies (xyz per particle, relative to the origin).
 	private float[] prevPos;
 	private float[] currPos;
-	private final float[] velocity;
+	private float[] velocity;
 
 	private int activeCount;
 	private int originX;
@@ -114,9 +119,9 @@ public final class FluidSimulation implements AutoCloseable {
 		this.config = config;
 		InertiaConfig.Quality quality = config.effectiveQuality();
 		this.params = FluidParameters.forSpacing(quality.particleSpacing());
+		this.limit = Math.max(quality.maxParticles(), config.particleLimit);
 		this.capacity = quality.maxParticles();
 		this.substeps = quality.substepsPerTick();
-		this.maxFoam = config.foam ? Math.min(capacity / 2, 262_144) : 0;
 		this.cuda = PhysXRuntime.cuda();
 
 		this.scene = createScene();
@@ -152,21 +157,49 @@ public final class FluidSimulation implements AutoCloseable {
 			phaseFlags.raise(PxParticlePhaseFlagEnum.eParticlePhaseSelfCollide);
 			phase = particleSystem.createPhase(material, phaseFlags);
 
-			hostPositions = PxCudaTopLevelFunctions.allocPinnedHostBufferPxVec4(cuda, capacity);
-			hostVelocities = PxCudaTopLevelFunctions.allocPinnedHostBufferPxVec4(cuda, capacity);
-			hostPhases = PxCudaTopLevelFunctions.allocPinnedHostBufferPxU32(cuda, capacity);
-			hostPos = MemoryUtil.memFloatBuffer(hostPositions.getAddress(), capacity * 4);
-			hostVel = MemoryUtil.memFloatBuffer(hostVelocities.getAddress(), capacity * 4);
-			IntBuffer phases = MemoryUtil.memIntBuffer(hostPhases.getAddress(), capacity);
+		}
 
-			float invMass = 1f / params.particleMass();
-			for (int i = 0; i < capacity; i++) {
-				hostPos.put(i * 4, 0f).put(i * 4 + 1, 0f).put(i * 4 + 2, 0f).put(i * 4 + 3, invMass);
-				hostVel.put(i * 4, 0f).put(i * 4 + 1, 0f).put(i * 4 + 2, 0f).put(i * 4 + 3, 0f);
-				phases.put(i, phase);
+		prevPos = new float[0];
+		currPos = new float[0];
+		velocity = new float[0];
+		allocateParticleBuffer(capacity);
+
+		terrain = new TerrainCollider(scene);
+		playerBody = new PlayerBody(scene);
+	}
+
+	/**
+	 * (Re)creates the GPU particle buffer and its pinned host staging memory with room for
+	 * {@code newCapacity} particles, keeping the {@code activeCount} live particles. Used once at
+	 * start and whenever the water outgrows the buffer.
+	 */
+	private void allocateParticleBuffer(int newCapacity) {
+		PxVec4 newPositions = PxCudaTopLevelFunctions.allocPinnedHostBufferPxVec4(cuda, newCapacity);
+		PxVec4 newVelocities = PxCudaTopLevelFunctions.allocPinnedHostBufferPxVec4(cuda, newCapacity);
+		NativeObject newPhases = PxCudaTopLevelFunctions.allocPinnedHostBufferPxU32(cuda, newCapacity);
+		FloatBuffer newPos = MemoryUtil.memFloatBuffer(newPositions.getAddress(), newCapacity * 4);
+		FloatBuffer newVel = MemoryUtil.memFloatBuffer(newVelocities.getAddress(), newCapacity * 4);
+		IntBuffer phases = MemoryUtil.memIntBuffer(newPhases.getAddress(), newCapacity);
+
+		float invMass = 1f / params.particleMass();
+		for (int i = 0; i < newCapacity; i++) {
+			if (i < activeCount) {
+				for (int c = 0; c < 4; c++) {
+					newPos.put(i * 4 + c, hostPos.get(i * 4 + c));
+					newVel.put(i * 4 + c, hostVel.get(i * 4 + c));
+				}
+			} else {
+				newPos.put(i * 4, 0f).put(i * 4 + 1, 0f).put(i * 4 + 2, 0f).put(i * 4 + 3, invMass);
+				newVel.put(i * 4, 0f).put(i * 4 + 1, 0f).put(i * 4 + 2, 0f).put(i * 4 + 3, 0f);
 			}
+			phases.put(i, phase);
+		}
 
-			if (maxFoam > 0) {
+		int newMaxFoam = config.foam ? Math.min(newCapacity / 2, 262_144) : 0;
+		PxParticleBuffer newBuffer;
+		PxParticleAndDiffuseBuffer newDiffuseBuffer = null;
+		try (MemoryStack mem = MemoryStack.stackPush()) {
+			if (newMaxFoam > 0) {
 				// Foam, spray and bubbles: PhysX spawns these "diffuse" particles where the water has
 				// high kinetic energy or traps air, and carries them with the flow.
 				PxDiffuseParticleParams diffuse = PxDiffuseParticleParams.createAt(mem, MemoryStack::nmalloc);
@@ -181,43 +214,76 @@ public final class FluidSimulation implements AutoCloseable {
 				diffuse.setUseAccurateVelocity(false);
 
 				PxParticleAndDiffuseBufferDesc desc = PxParticleAndDiffuseBufferDesc.createAt(mem, MemoryStack::nmalloc);
-				desc.setMaxParticles(capacity);
-				desc.setNumActiveParticles(0);
-				desc.setPositions(hostPositions);
-				desc.setVelocities(hostVelocities);
-				desc.setPhases(NativeArrayHelpers.voidToU32Ptr(hostPhases));
-				desc.setMaxDiffuseParticles(maxFoam);
-				desc.setMaxActiveDiffuseParticles(maxFoam);
+				desc.setMaxParticles(newCapacity);
+				desc.setNumActiveParticles(activeCount);
+				desc.setPositions(newPositions);
+				desc.setVelocities(newVelocities);
+				desc.setPhases(NativeArrayHelpers.voidToU32Ptr(newPhases));
+				desc.setMaxDiffuseParticles(newMaxFoam);
+				desc.setMaxActiveDiffuseParticles(newMaxFoam);
 				desc.setDiffuseParams(diffuse);
-				diffuseBuffer = PxCudaTopLevelFunctions.CreateAndPopulateParticleAndDiffuseBuffer(desc, cuda);
-				buffer = diffuseBuffer;
-				hostDiffuse = PxCudaTopLevelFunctions.allocPinnedHostBufferPxVec4(cuda, maxFoam);
-				hostDiffuseView = MemoryUtil.memFloatBuffer(hostDiffuse.getAddress(), maxFoam * 4);
+				newDiffuseBuffer = PxCudaTopLevelFunctions.CreateAndPopulateParticleAndDiffuseBuffer(desc, cuda);
+				newBuffer = newDiffuseBuffer;
 			} else {
 				PxParticleBufferDesc desc = PxParticleBufferDesc.createAt(mem, MemoryStack::nmalloc);
-				desc.setMaxParticles(capacity);
-				desc.setNumActiveParticles(0);
-				desc.setPositions(hostPositions);
-				desc.setVelocities(hostVelocities);
-				desc.setPhases(NativeArrayHelpers.voidToU32Ptr(hostPhases));
-				diffuseBuffer = null;
-				buffer = PxCudaTopLevelFunctions.CreateAndPopulateParticleBuffer(desc, cuda);
-				hostDiffuse = null;
-				hostDiffuseView = null;
+				desc.setMaxParticles(newCapacity);
+				desc.setNumActiveParticles(activeCount);
+				desc.setPositions(newPositions);
+				desc.setVelocities(newVelocities);
+				desc.setPhases(NativeArrayHelpers.voidToU32Ptr(newPhases));
+				newBuffer = PxCudaTopLevelFunctions.CreateAndPopulateParticleBuffer(desc, cuda);
 			}
-			particleSystem.addParticleBuffer(buffer);
 		}
+
+		// Swap in the new buffer and release the old one.
+		if (buffer != null) {
+			particleSystem.removeParticleBuffer(buffer);
+			buffer.release();
+			PxCudaTopLevelFunctions.freePinnedHostBufferPxVec4(cuda, hostPositions);
+			PxCudaTopLevelFunctions.freePinnedHostBufferPxVec4(cuda, hostVelocities);
+			PxCudaTopLevelFunctions.freePinnedHostBufferPxU32(cuda, NativeArrayHelpers.voidToU32Ptr(hostPhases));
+		}
+		if (hostDiffuse != null) {
+			PxCudaTopLevelFunctions.freePinnedHostBufferPxVec4(cuda, hostDiffuse);
+			hostDiffuse = null;
+			hostDiffuseView = null;
+		}
+
+		buffer = newBuffer;
+		diffuseBuffer = newDiffuseBuffer;
+		particleSystem.addParticleBuffer(buffer);
+		hostPositions = newPositions;
+		hostVelocities = newVelocities;
+		hostPhases = newPhases;
+		hostPos = newPos;
+		hostVel = newVel;
+		maxFoam = newMaxFoam;
+		if (newMaxFoam > 0) {
+			hostDiffuse = PxCudaTopLevelFunctions.allocPinnedHostBufferPxVec4(cuda, newMaxFoam);
+			hostDiffuseView = MemoryUtil.memFloatBuffer(hostDiffuse.getAddress(), newMaxFoam * 4);
+		}
+		foamCount = 0;
 
 		devicePositions = PxCudaTopLevelFunctions.pxVec4deviceptr(buffer.getPositionInvMasses());
 		deviceVelocities = PxCudaTopLevelFunctions.pxVec4deviceptr(buffer.getVelocities());
 		devicePhases = PxCudaTopLevelFunctions.pxU32deviceptr(buffer.getPhases());
 
-		prevPos = new float[capacity * 3];
-		currPos = new float[capacity * 3];
-		velocity = new float[capacity * 3];
+		prevPos = java.util.Arrays.copyOf(prevPos, newCapacity * 3);
+		currPos = java.util.Arrays.copyOf(currPos, newCapacity * 3);
+		velocity = java.util.Arrays.copyOf(velocity, newCapacity * 3);
+		capacity = newCapacity;
+	}
 
-		terrain = new TerrainCollider(scene);
-		playerBody = new PlayerBody(scene);
+	/** Makes room for {@code extra} more particles if the limit allows; returns the free space. */
+	private int ensureRoom(int extra) {
+		int free = capacity - activeCount;
+		if (free >= extra || capacity >= limit) {
+			return free;
+		}
+		int newCapacity = (int) Math.min((long) limit, Math.max((long) capacity * 2, (long) activeCount + extra));
+		io.github.isnowx17.inertia.Inertia.LOGGER.info("Growing the water particle buffer: {} -> {}", capacity, newCapacity);
+		allocateParticleBuffer(newCapacity);
+		return capacity - activeCount;
 	}
 
 	private PxScene createScene() {
@@ -236,7 +302,7 @@ public final class FluidSimulation implements AutoCloseable {
 			// Room for particle-vs-block contacts on the GPU; if this overflows, water leaks through
 			// the ground at high particle counts.
 			PxGpuDynamicsMemoryConfig gpuMemory = new PxGpuDynamicsMemoryConfig();
-			gpuMemory.setMaxParticleContacts(Math.max(gpuMemory.getMaxParticleContacts(), capacity * 4));
+			gpuMemory.setMaxParticleContacts((int) Math.min(Integer.MAX_VALUE / 2, Math.max((long) gpuMemory.getMaxParticleContacts(), (long) limit * 2)));
 			desc.setGpuDynamicsConfig(gpuMemory);
 			try {
 				return PhysXRuntime.physics().createScene(desc);
@@ -264,7 +330,7 @@ public final class FluidSimulation implements AutoCloseable {
 
 		int perAxis = params.particlesPerAxis();
 		int wanted = params.particlesPerBlock();
-		int count = Math.min(wanted, capacity - activeCount);
+		int count = Math.min(wanted, ensureRoom(wanted));
 		if (count <= 0) {
 			return 0;
 		}
@@ -313,6 +379,99 @@ public final class FluidSimulation implements AutoCloseable {
 		buffer.setNbActiveParticles(activeCount);
 
 		// Collision geometry around fresh water must exist before the next step.
+		int sx = Mth.floor(center.x) >> 4;
+		int sy = Mth.floor(center.y) >> 4;
+		int sz = Mth.floor(center.z) >> 4;
+		for (int dx = -1; dx <= 1; dx++) {
+			for (int dy = -1; dy <= 1; dy++) {
+				for (int dz = -1; dz <= 1; dz++) {
+					pendingUrgentSections.add(SectionPos.asLong(sx + dx, sy + dy, sz + dz));
+				}
+			}
+		}
+		return written;
+	}
+
+	/**
+	 * Emits one tick worth of a continuous stream: discs of particles of the given radius, moving
+	 * along {@code direction} at {@code speed} blocks per second. Called every tick by a water source.
+	 *
+	 * @return number of particles added
+	 */
+	public int spawnStream(Vec3 center, Vec3 direction, float radius, float speed) {
+		if (activeCount == 0 || !originSet) {
+			rebase(BlockPos.containing(center));
+		}
+		float spacing = params.spacing();
+
+		// Orthonormal basis around the stream direction.
+		org.joml.Vector3f d = new org.joml.Vector3f((float) direction.x, (float) direction.y, (float) direction.z);
+		if (d.lengthSquared() < 1e-6f) {
+			d.set(0f, -1f, 0f);
+		}
+		d.normalize();
+		org.joml.Vector3f helper = Math.abs(d.y) < 0.9f ? new org.joml.Vector3f(0f, 1f, 0f) : new org.joml.Vector3f(1f, 0f, 0f);
+		org.joml.Vector3f u = new org.joml.Vector3f(d).cross(helper).normalize();
+		org.joml.Vector3f v = new org.joml.Vector3f(d).cross(u).normalize();
+
+		// Disc points on a grid with the particle spacing; enough layers per tick to fill the stream.
+		int steps = Math.max(1, (int) Math.ceil(radius / spacing));
+		it.unimi.dsi.fastutil.floats.FloatArrayList disc = new it.unimi.dsi.fastutil.floats.FloatArrayList();
+		for (int a = -steps; a <= steps; a++) {
+			for (int b = -steps; b <= steps; b++) {
+				float da = a * spacing;
+				float db = b * spacing;
+				if (da * da + db * db <= radius * radius) {
+					disc.add(da);
+					disc.add(db);
+				}
+			}
+		}
+		int points = disc.size() / 2;
+		int layers = Math.max(1, Math.round(speed * TICK_SECONDS / spacing));
+		int wanted = points * layers;
+		int count = Math.min(wanted, ensureRoom(wanted));
+		if (count <= 0) {
+			return 0;
+		}
+
+		float invMass = 1f / params.particleMass();
+		float jitter = spacing * 0.05f;
+		float cx = (float) (center.x - originX);
+		float cy = (float) (center.y - originY);
+		float cz = (float) (center.z - originZ);
+		ThreadLocalRandom random = ThreadLocalRandom.current();
+		int start = activeCount;
+		int written = 0;
+		outer:
+		for (int k = 0; k < layers; k++) {
+			for (int n = 0; n < points; n++) {
+				if (written >= count) {
+					break outer;
+				}
+				float a = disc.getFloat(n * 2);
+				float b = disc.getFloat(n * 2 + 1);
+				float along = k * spacing;
+				float px = cx + u.x * a + v.x * b + d.x * along + (random.nextFloat() - 0.5f) * jitter;
+				float py = cy + u.y * a + v.y * b + d.y * along + (random.nextFloat() - 0.5f) * jitter;
+				float pz = cz + u.z * a + v.z * b + d.z * along + (random.nextFloat() - 0.5f) * jitter;
+				int i = start + written;
+				hostPos.put(i * 4, px).put(i * 4 + 1, py).put(i * 4 + 2, pz).put(i * 4 + 3, invMass);
+				hostVel.put(i * 4, d.x * speed).put(i * 4 + 1, d.y * speed).put(i * 4 + 2, d.z * speed).put(i * 4 + 3, 0f);
+				currPos[i * 3] = prevPos[i * 3] = px;
+				currPos[i * 3 + 1] = prevPos[i * 3 + 1] = py;
+				currPos[i * 3 + 2] = prevPos[i * 3 + 2] = pz;
+				velocity[i * 3] = d.x * speed;
+				velocity[i * 3 + 1] = d.y * speed;
+				velocity[i * 3 + 2] = d.z * speed;
+				written++;
+			}
+		}
+
+		uploadRange(start, written, true);
+		activeCount += written;
+		buffer.setNbActiveParticles(activeCount);
+
 		int sx = Mth.floor(center.x) >> 4;
 		int sy = Mth.floor(center.y) >> 4;
 		int sz = Mth.floor(center.z) >> 4;
@@ -404,8 +563,11 @@ public final class FluidSimulation implements AutoCloseable {
 
 	private void updateTerrain(ClientLevel level) {
 		// Sections within one block of a particle are needed right now; their neighbours soon.
+		// With very many particles, sample a subset: water is dense, and the one-block margin plus the
+		// neighbouring sections cover the gaps. A rotating offset makes every particle count over time.
 		LongOpenHashSet occupiedBlocks = new LongOpenHashSet();
-		for (int i = 0; i < activeCount; i++) {
+		int stride = Math.max(1, activeCount / TERRAIN_SAMPLES);
+		for (int i = (int) (tick % stride); i < activeCount; i += stride) {
 			int bx = Mth.floor(currPos[i * 3] + originX);
 			int by = Mth.floor(currPos[i * 3 + 1] + originY);
 			int bz = Mth.floor(currPos[i * 3 + 2] + originZ);
@@ -576,6 +738,11 @@ public final class FluidSimulation implements AutoCloseable {
 
 	public int capacity() {
 		return capacity;
+	}
+
+	/** The most particles this simulation can grow to. */
+	public int limit() {
+		return limit;
 	}
 
 	public FluidParameters params() {

@@ -35,7 +35,7 @@ public final class InertiaCommands {
 					source.sendFeedback(Component.translatable(
 						"command.inertia.info.simulation",
 						sim.activeCount(),
-						sim.capacity(),
+						sim.limit(),
 						sim.foamCount(),
 						sim.collisionSections(),
 						String.format(Locale.ROOT, "%.2f", sim.lastStepMillis())

@@ -10,6 +10,7 @@
 //   TextureMat     = column 0: time, ripple strength, refraction strength, absorption
 //                    column 1: deep water colour (rgb), shoreline softness (w)
 //                    column 2: sky colour (rgb), 1 if the sky colour is valid (w)
+//                    column 3: reflections on (x), caustics strength (y), sun strength (z)
 // Per-vertex: Color = biome water colour + base opacity, UV0 = (foam, fallback thickness).
 
 #include <minecraft:light.glsl>
