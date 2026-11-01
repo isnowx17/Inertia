@@ -1,0 +1,88 @@
+name: Release
+
+# Pushing a tag like v0.1.1 builds the Windows and Linux jars and publishes them as a GitHub
+# release. The tag must match mod_version in gradle.properties.
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build (${{ matrix.platform }})
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        platform: [windows, linux]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check tag matches mod_version
+        run: |
+          version=$(grep '^mod_version=' gradle.properties | cut -d= -f2)
+          if [ "v${version}" != "${GITHUB_REF_NAME}" ]; then
+            echo "Tag ${GITHUB_REF_NAME} does not match mod_version ${version}" >&2
+            exit 1
+          fi
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 25
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Build
+        run: ./gradlew build -Pplatform=${{ matrix.platform }} --no-parallel
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: inertia-${{ matrix.platform }}
+          path: build/libs/*-${{ matrix.platform }}.jar
+          if-no-files-found: error
+
+  release:
+    name: Publish release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Release notes from CHANGELOG.md
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          awk -v v="$version" '
+            $0 ~ "^## \\[" v "\\]" { found = 1; next }
+            found && /^## \[/ { exit }
+            found { print }
+          ' CHANGELOG.md > notes.md
+          {
+            echo
+            echo "---"
+            echo
+            echo "**Requirements:** NVIDIA GPU with a current driver (CUDA), Windows x64 or Linux x64,"
+            echo "Minecraft 26.3, Fabric Loader 0.20.1+, Fabric API. Singleplayer only."
+            echo
+            echo "Download the jar for your operating system:"
+            echo "- Windows: \`inertia-${version}+26.3-windows.jar\`"
+            echo "- Linux: \`inertia-${version}+26.3-linux.jar\`"
+            echo
+            echo "Full feature list and history: [CHANGELOG.md](https://github.com/${GITHUB_REPOSITORY}/blob/${GITHUB_REF_NAME}/CHANGELOG.md)"
+          } >> notes.md
+          cat notes.md
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          name: Inertia ${{ github.ref_name }}
+          body_path: notes.md
+          prerelease: ${{ startsWith(github.ref_name, 'v0.') }}
+          files: dist/*.jar
+          fail_on_unmatched_files: true
