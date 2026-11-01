@@ -35,12 +35,20 @@ jobs:
           if ! grep -q "^## \[${version}\]" CHANGELOG.md; then
             echo "CHANGELOG.md has no entry for ${version}; not releasing"
             echo "release=false" >> "$GITHUB_OUTPUT"
-          elif gh release view "v${version}" --repo "${GITHUB_REPOSITORY}" > /dev/null 2>&1; then
-            echo "v${version} is already released"
-            echo "release=false" >> "$GITHUB_OUTPUT"
           else
-            echo "Releasing v${version}"
-            echo "release=true" >> "$GITHUB_OUTPUT"
+            prerelease=$(gh release view "v${version}" --repo "${GITHUB_REPOSITORY}" --json isPrerelease --jq .isPrerelease 2>/dev/null || echo missing)
+            if [ "${prerelease}" = "missing" ]; then
+              echo "Releasing v${version}"
+              echo "release=true" >> "$GITHUB_OUTPUT"
+            elif [ "${prerelease}" = "true" ]; then
+              # Older releases were published as pre-releases, which GitHub hides from the
+              # repository sidebar; republish them as the latest full release.
+              echo "Promoting pre-release v${version} to a full release"
+              echo "release=true" >> "$GITHUB_OUTPUT"
+            else
+              echo "v${version} is already released"
+              echo "release=false" >> "$GITHUB_OUTPUT"
+            fi
           fi
 
   build:
@@ -113,6 +121,9 @@ jobs:
           target_commitish: ${{ github.sha }}
           name: Inertia ${{ env.VERSION }}
           body_path: notes.md
-          prerelease: ${{ startsWith(env.VERSION, '0.') }}
+          # 0.x versions are beta by the versioning rules, but are published as full releases so
+          # GitHub shows them as "Latest" on the repository page.
+          prerelease: false
+          make_latest: true
           files: dist/*.jar
           fail_on_unmatched_files: true
