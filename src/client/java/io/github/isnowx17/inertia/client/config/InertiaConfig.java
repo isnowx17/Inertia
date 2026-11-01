@@ -21,7 +21,7 @@ public final class InertiaConfig {
 	public static final String RENDER_SURFACE = "surface";
 	public static final String RENDER_PARTICLES = "particles";
 	public static final String QUALITY_CUSTOM = "custom";
-	private static final int CURRENT_VERSION = 2;
+	private static final int CURRENT_VERSION = 3;
 
 	/** Version of this file's defaults; older files get changed defaults migrated on load. */
 	public int configVersion = 0;
@@ -32,7 +32,7 @@ public final class InertiaConfig {
 	 * of water) and a finer surface; they need a stronger GPU and CPU. With {@code "custom"} the
 	 * values below marked "custom" are used.
 	 */
-	public String quality = "medium";
+	public String quality = "high";
 
 	/** Custom: distance between neighbouring particles in blocks (0.1 = 1000 particles per block). */
 	public float particleSpacing = 0.1f;
@@ -66,6 +66,21 @@ public final class InertiaConfig {
 	 * visible but inflate the surface; higher values hug the particles more tightly.
 	 */
 	public float surfaceThreshold = 0.3f;
+
+	/**
+	 * Draw the water with Inertia's own shader (refraction, depth colour, ripples, sun glints).
+	 * Turns itself off if the shader does not work on this computer.
+	 */
+	public boolean waterShader = true;
+
+	/** Strength of the small surface ripples (shader). 0 makes the water perfectly smooth. */
+	public float rippleStrength = 1.0f;
+
+	/** How strongly the water bends what is behind it (shader). */
+	public float refractionStrength = 1.0f;
+
+	/** How quickly light is absorbed in the water (shader). Higher makes deep water darker and bluer. */
+	public float waterAbsorption = 1.0f;
 
 	/** Size of rendered particles / spray droplets relative to the particle spacing. */
 	public float renderScale = 1.6f;
@@ -120,10 +135,10 @@ public final class InertiaConfig {
 	public Quality effectiveQuality() {
 		return switch (quality) {
 			case "low" -> LOW;
-			case "high" -> HIGH;
 			case "ultra" -> ULTRA;
+			case "medium" -> MEDIUM;
 			case QUALITY_CUSTOM -> new Quality(particleSpacing, maxParticles, surfaceCellSize, substepsPerTick);
-			default -> MEDIUM;
+			default -> HIGH;
 		};
 	}
 
@@ -161,14 +176,18 @@ public final class InertiaConfig {
 			// 0.2.0 test build: foam formed too easily on thin water.
 			foamAmount = 0.4f;
 		}
+		if (configVersion < 3 && "medium".equals(quality)) {
+			// 0.3.0: the default quality became "high"; files that still had the old default follow it.
+			quality = "high";
+		}
 		configVersion = CURRENT_VERSION;
 	}
 
 	private void clamp() {
-		quality = quality == null ? "medium" : quality.toLowerCase(Locale.ROOT);
+		quality = quality == null ? "high" : quality.toLowerCase(Locale.ROOT);
 		if (!quality.equals("low") && !quality.equals("medium") && !quality.equals("high")
 			&& !quality.equals("ultra") && !quality.equals(QUALITY_CUSTOM)) {
-			quality = "medium";
+			quality = "high";
 		}
 		particleSpacing = clamp(orDefault(particleSpacing, 0.1f), 0.05f, 0.25f);
 		maxParticles = clamp(maxParticles, 4_096, 2_097_152);
@@ -182,6 +201,9 @@ public final class InertiaConfig {
 		surfaceThreshold = clamp(orDefault(surfaceThreshold, 0.3f), 0.05f, 1f);
 		renderScale = clamp(orDefault(renderScale, 1.6f), 0.5f, 4f);
 		renderOpacity = clamp(orDefault(renderOpacity, 0.6f), 0.05f, 1f);
+		rippleStrength = clamp(orDefault(rippleStrength, 1f), 0f, 3f);
+		refractionStrength = clamp(orDefault(refractionStrength, 1f), 0f, 3f);
+		waterAbsorption = clamp(orDefault(waterAbsorption, 1f), 0.1f, 5f);
 		foamAmount = clamp(orDefault(foamAmount, 0.4f), 0f, 1f);
 		foamLifetime = clamp(orDefault(foamLifetime, 2.5f), 0.2f, 10f);
 		foamSize = clamp(orDefault(foamSize, 1f), 0.25f, 4f);

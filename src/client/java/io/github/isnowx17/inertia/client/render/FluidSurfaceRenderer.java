@@ -1,6 +1,11 @@
 package io.github.isnowx17.inertia.client.render;
 
+import com.mojang.blaze3d.vertex.BufferBuilder;
+import com.mojang.blaze3d.vertex.ByteBufferBuilder;
+import com.mojang.blaze3d.vertex.DefaultVertexFormat;
+import com.mojang.blaze3d.vertex.MeshData;
 import com.mojang.blaze3d.vertex.PoseStack;
+import com.mojang.renderpearl.api.pipeline.PrimitiveTopology;
 import com.mojang.blaze3d.vertex.VertexConsumer;
 import io.github.isnowx17.inertia.Inertia;
 import io.github.isnowx17.inertia.client.config.InertiaConfig;
@@ -25,6 +30,7 @@ import net.minecraft.resources.Identifier;
 import net.minecraft.util.LightCoordsUtil;
 import net.minecraft.util.Mth;
 import net.minecraft.world.phys.Vec3;
+import org.joml.Matrix4f;
 import org.joml.Quaternionf;
 import org.joml.Vector3f;
 
@@ -57,6 +63,10 @@ public final class FluidSurfaceRenderer {
 	/** Foam particles drawn at most per frame; beyond this every n-th particle is drawn. */
 	private static final int MAX_FOAM_DRAWN = 120_000;
 	private static final float TICK_SECONDS = 0.05f;
+	/** How quickly light is absorbed in the simple (non-shader) rendering, per block of water. */
+	private static final float ABSORPTION_PER_BLOCK = 1.1f;
+	/** Opacity of very shallow water in the simple rendering. */
+	private static final float SHALLOW_OPACITY = 0.12f;
 	/** Isolated particles slower than this (blocks/second) are not drawn as droplets. */
 	private static final float MIN_DROPLET_SPEED = 1.0f;
 	/** Foam is drawn where the field density is within this band around the surface threshold. */
@@ -116,8 +126,12 @@ public final class FluidSurfaceRenderer {
 		long foamNanos;
 	}
 
-	public FluidSurfaceRenderer(FluidManager manager) {
+	private final WaterPass waterPass;
+	private final ByteBufferBuilder shaderVertexBytes = new ByteBufferBuilder(1 << 20);
+
+	public FluidSurfaceRenderer(FluidManager manager, WaterPass waterPass) {
 		this.manager = manager;
+		this.waterPass = waterPass;
 	}
 
 	public void collectSubmits(LevelRenderContext context) {
@@ -156,7 +170,13 @@ public final class FluidSurfaceRenderer {
 		float foamDt = paused ? -TICK_SECONDS : Mth.clamp((now - result.foamNanos) / 1.0e9f - TICK_SECONDS, -TICK_SECONDS, MAX_EXTRAPOLATION);
 
 		if (!result.mesh.isEmpty()) {
-			submitSurface(context, level, result, cam, meshDt, waterColor, config.renderOpacity);
+			if (config.waterShader && waterPass.isAvailable()) {
+				pendingShaderSurface = prepareSurface(level, result, cam, meshDt, waterColor, config.renderOpacity, true);
+				pendingWaterColor = waterColor;
+				pendingCamera = cam;
+			} else {
+				submitSurface(context, level, result, cam, meshDt, waterColor, config.renderOpacity);
+			}
 		}
 		if (result.dropletCount > 0) {
 			float radius = result.spacing * config.renderScale * 0.5f * DROPLET_SCALE;
@@ -314,9 +334,20 @@ public final class FluidSurfaceRenderer {
 	// Drawing
 	// ------------------------------------------------------------------------------------------
 
-	private void submitSurface(
-		LevelRenderContext context, ClientLevel level, Result result, Vec3 cam, float dt, int waterColor, float opacity
-	) {
+	/** Per-vertex data of the surface for one frame. */
+	private record SurfaceFrame(float[] positions, int[] colors, int[] lights, float[] foam, float[] thickness, float[] normals,
+		int[] quads, int quadCount) {
+	}
+
+	/**
+	 * Computes camera-relative positions (moved along the flow for {@code dt}), colours and light
+	 * for every surface vertex.
+	 *
+	 * <p>With {@code forShader} the colour is the plain biome water colour and the shader does all
+	 * shading. Otherwise the colour already contains depth-dependent tint and transparency (shallow
+	 * water clear, deep water blue) and a Fresnel sky reflection.
+	 */
+	private SurfaceFrame prepareSurface(ClientLevel level, Result result, Vec3 cam, float dt, int waterColor, float opacity, boolean forShader) {
 		FluidSurfaceMesher.Mesh mesh = result.mesh;
 		int vertexCount = mesh.vertexCount;
 		float[] v = mesh.vertices;
@@ -324,12 +355,16 @@ public final class FluidSurfaceRenderer {
 		float offY = (float) (result.originY - cam.y);
 		float offZ = (float) (result.originZ - cam.z);
 
-		// Per-vertex camera-relative position, colour and light, computed once per frame.
 		float[] pos = new float[vertexCount * 3];
+		float[] normals = new float[vertexCount * 3];
 		int[] colors = new int[vertexCount];
 		int[] lights = new int[vertexCount];
+		float[] foam = new float[vertexCount];
+		float[] thickness = new float[vertexCount];
 		BlockPos.MutableBlockPos block = new BlockPos.MutableBlockPos();
-		int baseAlpha = Math.round(Mth.clamp(opacity, 0.15f, 1f) * 255f);
+		float deepOpacity = Mth.clamp(opacity + 0.3f, 0.3f, 0.95f);
+		int shallowColor = lerpRgb(waterColor, 0xFFFFFF, 0.3f);
+		int deepColor = darken(waterColor, 0.45f);
 
 		for (int i = 0; i < vertexCount; i++) {
 			int o = i * FluidSurfaceMesher.VERTEX_STRIDE;
@@ -346,18 +381,33 @@ public final class FluidSurfaceRenderer {
 			pos[i * 3] = x;
 			pos[i * 3 + 1] = y;
 			pos[i * 3 + 2] = z;
+			normals[i * 3] = v[o + 3];
+			normals[i * 3 + 1] = v[o + 4];
+			normals[i * 3 + 2] = v[o + 5];
 
-			// Fresnel: looking straight down shows the water colour, grazing angles reflect the sky.
-			float len = Mth.sqrt(x * x + y * y + z * z);
-			float cos = len > 1e-4f ? Math.abs((x * v[o + 3] + y * v[o + 4] + z * v[o + 5]) / len) : 1f;
-			float fresnel = 0.04f + 0.96f * pow5(1f - cos);
 			float speed = Mth.sqrt(vx * vx + vy * vy + vz * vz);
 			float churn = Mth.clamp(speed / SURFACE_FOAM_SPEED, 0f, 1f);
+			foam[i] = churn * 0.6f;
+			thickness[i] = v[o + 9];
 
-			int rgb = lerpRgb(darken(waterColor, 0.75f), SKY_REFLECTION, fresnel * 0.7f);
-			rgb = lerpRgb(rgb, FOAM_COLOR, churn * 0.5f);
-			int alpha = Mth.clamp(Math.round(baseAlpha + (255 - baseAlpha) * Math.max(fresnel, churn * 0.4f)), 0, 255);
-			colors[i] = (alpha << 24) | rgb;
+			if (forShader) {
+				colors[i] = 0xFF000000 | waterColor;
+			} else {
+				// Light passing through deeper water is absorbed more: clear when shallow, blue when deep.
+				float depthFactor = 1f - (float) Math.exp(-v[o + 9] * ABSORPTION_PER_BLOCK);
+				int body = lerpRgb(shallowColor, deepColor, depthFactor);
+				float bodyAlpha = Mth.lerp(depthFactor, SHALLOW_OPACITY, deepOpacity);
+
+				// Fresnel: grazing angles reflect the sky and become opaque.
+				float len = Mth.sqrt(x * x + y * y + z * z);
+				float cos = len > 1e-4f ? Math.abs((x * v[o + 3] + y * v[o + 4] + z * v[o + 5]) / len) : 1f;
+				float fresnel = 0.04f + 0.96f * pow5(1f - cos);
+
+				int rgb = lerpRgb(body, SKY_REFLECTION, fresnel * 0.7f);
+				rgb = lerpRgb(rgb, FOAM_COLOR, churn * 0.5f);
+				float alpha = bodyAlpha + (1f - bodyAlpha) * Math.max(fresnel, churn * 0.4f);
+				colors[i] = (Mth.clamp(Math.round(alpha * 255f), 0, 255) << 24) | rgb;
+			}
 
 			float probe = LIGHT_PROBE_OFFSET;
 			lights[i] = light(level, block,
@@ -365,23 +415,92 @@ public final class FluidSurfaceRenderer {
 				Mth.floor(ly + Math.max(v[o + 4], 0f) * probe + 0.05f) + result.originY,
 				Mth.floor(lz + v[o + 5] * probe) + result.originZ);
 		}
+		return new SurfaceFrame(pos, colors, lights, foam, thickness, normals, mesh.quads, mesh.quadCount);
+	}
 
-		int quadCount = mesh.quadCount;
-		int[] quads = mesh.quads;
+	private void submitSurface(
+		LevelRenderContext context, ClientLevel level, Result result, Vec3 cam, float dt, int waterColor, float opacity
+	) {
+		SurfaceFrame frame = prepareSurface(level, result, cam, dt, waterColor, opacity, false);
 		context.submitNodeCollector().submitCustomGeometry(new PoseStack(), surfaceType, (pose, buffer) -> {
-			for (int q = 0; q < quadCount; q++) {
+			for (int q = 0; q < frame.quadCount(); q++) {
 				for (int k = 0; k < 4; k++) {
-					int i = quads[q * 4 + k];
-					int o = i * FluidSurfaceMesher.VERTEX_STRIDE;
-					buffer.addVertex(pose, pos[i * 3], pos[i * 3 + 1], pos[i * 3 + 2])
-						.setColor(colors[i])
+					int i = frame.quads()[q * 4 + k];
+					buffer.addVertex(pose, frame.positions()[i * 3], frame.positions()[i * 3 + 1], frame.positions()[i * 3 + 2])
+						.setColor(frame.colors()[i])
 						.setUv(0.5f, 0.5f)
 						.setOverlay(OverlayTexture.NO_OVERLAY)
-						.setLight(lights[i])
-						.setNormal(pose, v[o + 3], v[o + 4], v[o + 5]);
+						.setLight(frame.lights()[i])
+						.setNormal(pose, frame.normals()[i * 3], frame.normals()[i * 3 + 1], frame.normals()[i * 3 + 2]);
 				}
 			}
 		});
+	}
+
+	// ------------------------------------------------------------------------------------------
+	// Shader path: the surface is drawn by WaterPass after the main pass
+	// ------------------------------------------------------------------------------------------
+
+	/** Surface waiting to be drawn by the water shader at the end of the main pass. */
+	private SurfaceFrame pendingShaderSurface;
+	private int pendingWaterColor;
+	private Vec3 pendingCamera;
+
+	/** Called at {@code END_MAIN}: draws the surface collected this frame with the water shader. */
+	public void drawShaderSurface(LevelRenderContext context) {
+		SurfaceFrame frame = pendingShaderSurface;
+		pendingShaderSurface = null;
+		if (frame == null || frame.quadCount() == 0) {
+			return;
+		}
+
+		try {
+			BufferBuilder builder = new BufferBuilder(shaderVertexBytes, PrimitiveTopology.QUADS, DefaultVertexFormat.ENTITY);
+			for (int q = 0; q < frame.quadCount(); q++) {
+				for (int k = 0; k < 4; k++) {
+					int i = frame.quads()[q * 4 + k];
+					builder.addVertex(frame.positions()[i * 3], frame.positions()[i * 3 + 1], frame.positions()[i * 3 + 2])
+						.setColor(frame.colors()[i])
+						.setUv(frame.foam()[i], frame.thickness()[i])
+						.setOverlay(OverlayTexture.NO_OVERLAY)
+						.setLight(frame.lights()[i])
+						.setNormal(frame.normals()[i * 3], frame.normals()[i * 3 + 1], frame.normals()[i * 3 + 2]);
+				}
+			}
+			try (MeshData meshData = builder.build()) {
+				if (meshData == null) {
+					return;
+				}
+				InertiaConfig config = manager.config();
+				var sky = context.levelState().skyRenderState;
+				float sunAngle = sky.sunAngle;
+				Vector3f sunDirection = new Vector3f(-Mth.sin(sunAngle), Mth.cos(sunAngle), 0f);
+				float daylight = Mth.clamp(sunDirection.y * 4f + 0.2f, 0f, 1f) * Mth.clamp(sky.rainBrightness, 0f, 1f);
+				Vec3 cam = pendingCamera;
+				Vector3f cameraWrap = new Vector3f((float) (cam.x % 4096.0), (float) (cam.y % 4096.0), (float) (cam.z % 4096.0));
+
+				int deep = darken(pendingWaterColor, 0.35f);
+				org.joml.Vector3fc skyColor = sky.skyColor;
+				Matrix4f parameters = new Matrix4f()
+					.m00((System.nanoTime() / 1.0e9f) % 3600f)
+					.m01(config.rippleStrength)
+					.m02(0.06f * config.refractionStrength)
+					.m03(config.waterAbsorption)
+					.m10(((deep >> 16) & 0xFF) / 255f)
+					.m11(((deep >> 8) & 0xFF) / 255f)
+					.m12((deep & 0xFF) / 255f)
+					.m13(0.08f)
+					.m20(skyColor != null ? skyColor.x() : 0f)
+					.m21(skyColor != null ? skyColor.y() : 0f)
+					.m22(skyColor != null ? skyColor.z() : 0f)
+					.m23(skyColor != null ? 1f : 0f)
+					.m30(0f).m31(0f).m32(0f).m33(1f);
+				waterPass.draw(meshData.vertexBuffer(), meshData.drawState().indexCount(), sunDirection, daylight, cameraWrap, parameters);
+			}
+		} catch (Throwable t) {
+			Inertia.LOGGER.error("Water shader failed; switching to the simple water rendering", t);
+			waterPass.markFailed();
+		}
 	}
 
 	private void submitDroplets(

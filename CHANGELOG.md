@@ -3,6 +3,30 @@
 All notable changes to Inertia are documented here. Versioning rules are described in
 [PLAN.md](PLAN.md#5-sürümleme).
 
+## [Unreleased] — 0.3.0
+
+### Added
+- **Water shader.** The water surface is drawn with Inertia's own shader in a render pass after
+  the main level pass:
+  - **Refraction:** what is behind the water is seen through it, bent by the ripples.
+  - **Depth-dependent colour and clarity:** light is absorbed by the distance it travels through
+    the water (read per pixel from the depth buffer): shallow water is clear, deep water turns
+    blue-green.
+  - **Ripples:** animated, world-anchored small waves on every pixel.
+  - **Reflections:** Fresnel sky reflection using the real sky colour, and a sharp sun glint.
+  - Soft shorelines where the water gets very thin.
+- The shader is compiled with Minecraft's shader system as an optional pipeline; if it does not
+  work on a computer the mod falls back to the simple rendering automatically.
+- The simple rendering also got depth-dependent colour and transparency (per-vertex water depth).
+- Config: `waterShader`, `rippleStrength`, `refractionStrength`, `waterAbsorption`.
+- `/inertia info` shows whether the water shader is active.
+- Shader compile test: the shaders are compiled with shaderc and cross-compiled with SPIRV-Cross
+  in the unit tests, exactly like Minecraft does, so shader errors are caught without a GPU.
+
+### Changed
+- Default quality is now `high` (1728 particles per block). Config files that still had the old
+  default `medium` are moved to `high`.
+
 ## [Unreleased] — 0.2.0
 
 ### Added
