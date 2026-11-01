@@ -20,9 +20,6 @@ All notable changes to Inertia are documented here. Versioning rules are describ
 - The simple rendering also got depth-dependent colour and transparency (per-vertex water depth).
 - Config: `waterShader`, `rippleStrength`, `refractionStrength`, `waterAbsorption`.
 - `/inertia info` shows whether the water shader is active.
-- The shape of the water reads better with the shader: refraction follows the tilt of the
-  simulated waves (not only the small ripples), sun-facing sides of waves are lit brighter than the
-  far sides, and the ripples are stronger.
 - With the water shader, foam and spray are drawn after the water surface, so their soft edges
   blend with the water instead of the ground below it (foam no longer has green grass edges).
   Foam just below the surface is pulled slightly towards the camera so it stays visible.
