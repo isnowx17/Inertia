@@ -3,6 +3,14 @@
 All notable changes to Inertia are documented here. Versioning rules are described in
 [PLAN.md](PLAN.md#5-sürümleme).
 
+## [0.4.2] — Beta
+
+### Fixed
+- Still water no longer turns completely white: only foam floating right at the surface counts
+  (bubbles below the surface are ignored), the foam layer saturates much more slowly, and the
+  shader always draws foam as thin marbled lines instead of a solid white sheet.
+- Default `foamAmount` 0.35 and `foamLifetime` 3 s (old defaults in config files are updated).
+
 ## [0.4.1] — Beta
 
 ### Fixed
