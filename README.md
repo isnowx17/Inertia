@@ -11,7 +11,7 @@ from a bucket and watch it splash, flow down stairs, pool in holes and push you 
 
 ## Download
 
-Inertia ships one jar per operating system because the PhysX GPU library is large
+Get the jar from the [Releases page](https://github.com/isnowx17/Inertia/releases). Inertia ships one jar per operating system because the PhysX GPU library is large
 (about 250 MB unpacked per platform):
 
 | Your system | File |
@@ -74,6 +74,10 @@ Requires JDK 25.
 The jars are written to `build/libs/`. Without `-Pplatform` the current operating system is
 used. The CUDA build of physx-jni is downloaded from its GitHub release and its SHA-256 checksum
 is verified during the build.
+
+To publish a release, set `mod_version` in `gradle.properties`, add the version to
+`CHANGELOG.md` and push a tag `v<version>`. GitHub Actions builds both jars and attaches them to
+the release.
 
 ## How it works
 
