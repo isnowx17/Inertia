@@ -28,7 +28,11 @@ background).
 - Take the **PhysX Water Bucket** from the *Tools & Utilities* creative tab.
 - **Right-click** releases one block of water where you are looking. Hold right-click to keep
   pouring. The bucket never runs empty.
-- `/inertia info` shows the GPU and simulation status, `/inertia clear` removes all water.
+- The **PhysX Flowing Water Bucket** starts a continuous stream out of the block face you click
+  (a fountain on the ground, a faucet on a wall, a waterfall from a ceiling). Click near a source
+  to stop it; sneak + click stops all sources.
+- `/inertia info` shows the GPU and simulation status, `/inertia clear` removes all water and
+  stops all sources.
 
 Water simulated by Inertia is separate from vanilla water: oceans, lakes and the normal water
 bucket are unchanged. The water is not saved: it disappears when you leave the world.
@@ -40,12 +44,18 @@ bucket are unchanged. The water is not saved: it disappears when you leave the w
 | Setting | Default | Meaning |
 |---|---|---|
 | `quality` | `high` | `low`, `medium`, `high`, `ultra` or `custom`; see below. |
+| `particleLimit` | 2097152 | Most water particles; the buffer grows up to this as you add water. |
+| `sourceRadius` | 0.3 | Radius of the stream from a flowing water source, in blocks. |
+| `sourceSpeed` | 4.0 | Speed of the water leaving a flowing water source, blocks per second. |
 | `despawnDistance` | 96 | Water further away from you than this is removed. |
 | `playerInteraction` | true | Whether water pushes, slows and lifts the player. |
 | `waterShader` | true | Draw the water with Inertia's shader (refraction, depth colour, ripples, sun glints). Falls back automatically if unsupported. |
 | `rippleStrength` | 1.0 | Strength of the surface ripples; 0 = perfectly smooth. |
 | `refractionStrength` | 1.0 | How strongly the water bends what is behind it. |
 | `waterAbsorption` | 1.0 | How quickly light is absorbed; higher makes deep water darker and bluer. |
+| `reflections` | true | Reflect blocks and entities in the water (screen-space reflections). |
+| `caustics` | 1.0 | Strength of the light patterns on the ground under the water; 0 = off. |
+| `sunStrength` | 1.0 | Strength of the sun glint. |
 | `renderMode` | `surface` | `surface`: one continuous water surface. `particles`: every particle as a sphere. |
 | `surfaceSmoothness` | 2.0 | Surface smoothing radius relative to the surface cell size. |
 | `surfaceThreshold` | 0.3 | Surface level as a fraction of still-water density. |
@@ -64,7 +74,7 @@ bucket are unchanged. The water is not saved: it disappears when you leave the w
 
 Quality levels (a bucket is always one block of water; changes apply after restarting the game):
 
-| `quality` | Particles per block | Max particles | Surface cell | Sub-steps |
+| `quality` | Particles per block | Starting buffer | Surface cell | Sub-steps |
 |---|---|---|---|---|
 | `low` | 512 | 65,536 | 0.19 blocks | 2 |
 | `medium` | 1000 | 131,072 | 0.15 blocks | 3 |
@@ -72,7 +82,8 @@ Quality levels (a bucket is always one block of water; changes apply after resta
 | `ultra` | 4096 | 524,288 | 0.1 blocks | 4 |
 | `custom` | from `particleSpacing` | `maxParticles` | `surfaceCellSize` | `substepsPerTick` |
 
-On every quality level about 128 blocks of water can exist at the same time.
+The particle buffer starts at the size above and doubles automatically when you add more water,
+up to `particleLimit`.
 
 ## Building
 
@@ -110,7 +121,8 @@ jars, creates the tag `v<version>` and publishes the release.
 - **Water shader:** after the main level pass the scene colour and depth are copied, then the
   surface is drawn with Inertia's own shader in a separate render pass: refraction through
   ripple-distorted lookups, per-pixel absorption from the depth difference (clear shallows, blue
-  depths), Fresnel sky reflection and a sun glint. It is registered as an optional pipeline, so a
+  depths), screen-space reflections of the surroundings, caustics on the ground below, Fresnel
+  sky reflection and a sun glint. It is registered as an optional pipeline, so a
   compile failure only switches back to the simple rendering.
 - **Foam:** PhysX diffuse particles (foam, spray, bubbles) spawn where the water splashes or
   churns and are drawn as soft streaks stretched along the flow.

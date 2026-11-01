@@ -24,6 +24,13 @@ public final class FluidManager {
 	private boolean failed;
 	private boolean warnedThisSession;
 	private double playerSubmersion;
+	private final java.util.List<Source> sources = new java.util.ArrayList<>();
+	private long lastSourceToggle = Long.MIN_VALUE / 2;
+	private static final int MAX_SOURCES = 16;
+	/** Ticks between two source toggles, so holding right-click does not flip a source on and off. */
+	private static final long SOURCE_TOGGLE_COOLDOWN = 15;
+	/** Clicking within this many blocks of a source turns it off. */
+	private static final double SOURCE_PICK_DISTANCE = 1.0;
 	private java.util.function.Supplier<String> waterShaderStatus = () -> "off";
 
 	public FluidManager(InertiaConfig config) {
@@ -81,6 +88,11 @@ public final class FluidManager {
 		}
 
 		try {
+			for (Source source : sources) {
+				if (simulation.spawnStream(source.position(), source.direction(), config.sourceRadius, config.sourceSpeed) == 0) {
+					break; // particle limit reached
+				}
+			}
 			simulation.tick(current, client.player);
 			playerSubmersion = config.playerInteraction ? PlayerFluidInteraction.apply(simulation, client.player) : 0;
 		} catch (Throwable t) {
@@ -90,6 +102,60 @@ public final class FluidManager {
 
 	/** Handler for {@link io.github.isnowx17.inertia.item.FluidBucketItem}. */
 	public boolean releaseWater(Player player, Vec3 center, Vec3 velocity) {
+		if (!ensureSimulation(player)) {
+			return false;
+		}
+		try {
+			int added = simulation.spawnBlock(center, velocity);
+			if (added == 0) {
+				player.sendOverlayMessage(Component.translatable("message.inertia.limit_reached", simulation.limit()).withStyle(ChatFormatting.YELLOW));
+				return false;
+			}
+			return true;
+		} catch (Throwable t) {
+			handleFailure(player, t);
+			return false;
+		}
+	}
+
+	/** Handler for {@link io.github.isnowx17.inertia.item.FluidSourceItem}. */
+	public boolean toggleSource(Player player, Vec3 position, Vec3 direction, boolean stopAll) {
+		long now = player.level().getGameTime();
+		if (now - lastSourceToggle < SOURCE_TOGGLE_COOLDOWN) {
+			return false; // holding right-click repeats the use; only react to separate clicks
+		}
+		lastSourceToggle = now;
+
+		if (stopAll) {
+			sources.clear();
+			player.sendOverlayMessage(Component.translatable("message.inertia.sources_cleared"));
+			return true;
+		}
+		for (int i = 0; i < sources.size(); i++) {
+			if (sources.get(i).position().distanceToSqr(position) < SOURCE_PICK_DISTANCE * SOURCE_PICK_DISTANCE) {
+				sources.remove(i);
+				player.sendOverlayMessage(Component.translatable("message.inertia.source_removed", sources.size()));
+				return true;
+			}
+		}
+		if (sources.size() >= MAX_SOURCES) {
+			player.sendOverlayMessage(Component.translatable("message.inertia.source_limit", MAX_SOURCES).withStyle(ChatFormatting.YELLOW));
+			return false;
+		}
+		if (!ensureSimulation(player)) {
+			return false;
+		}
+		sources.add(new Source(position, direction));
+		player.sendOverlayMessage(Component.translatable("message.inertia.source_added", sources.size()));
+		return true;
+	}
+
+	/** A continuously flowing water source. */
+	private record Source(Vec3 position, Vec3 direction) {
+	}
+
+	/** Checks that the GPU simulation can run and creates it on first use. */
+	private boolean ensureSimulation(Player player) {
 		Minecraft client = Minecraft.getInstance();
 		if (!client.hasSingleplayerServer()) {
 			player.sendOverlayMessage(Component.translatable("message.inertia.singleplayer_only").withStyle(ChatFormatting.RED));
@@ -115,27 +181,22 @@ public final class FluidManager {
 			return false;
 		}
 
-		try {
-			if (simulation == null) {
+		if (simulation == null) {
+			try {
 				simulation = new FluidSimulation(config);
 				level = client.level;
 				Inertia.LOGGER.info(
-					"Fluid simulation started: up to {} particles, {} per block",
+					"Fluid simulation started: {} particles (grows up to {}), {} per block",
 					simulation.capacity(),
+					simulation.limit(),
 					simulation.params().particlesPerBlock()
 				);
-			}
-
-			int added = simulation.spawnBlock(center, velocity);
-			if (added == 0) {
-				player.sendOverlayMessage(Component.translatable("message.inertia.limit_reached", simulation.capacity()).withStyle(ChatFormatting.YELLOW));
+			} catch (Throwable t) {
+				handleFailure(player, t);
 				return false;
 			}
-			return true;
-		} catch (Throwable t) {
-			handleFailure(player, t);
-			return false;
 		}
+		return true;
 	}
 
 	public void onBlockChanged(BlockPos pos) {
@@ -152,6 +213,7 @@ public final class FluidManager {
 
 	/** Removes all water. */
 	public int clear() {
+		sources.clear();
 		if (simulation == null) {
 			return 0;
 		}
@@ -181,6 +243,7 @@ public final class FluidManager {
 
 	private void closeSimulation() {
 		playerSubmersion = 0;
+		sources.clear();
 		if (simulation != null) {
 			try {
 				simulation.close();

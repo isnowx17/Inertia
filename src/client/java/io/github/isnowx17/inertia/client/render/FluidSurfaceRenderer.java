@@ -540,7 +540,10 @@ public final class FluidSurfaceRenderer {
 				.m21(skyColor != null ? skyColor.y() : 0f)
 				.m22(skyColor != null ? skyColor.z() : 0f)
 				.m23(skyColor != null ? 1f : 0f)
-				.m30(0f).m31(0f).m32(0f).m33(1f);
+				.m30(config.reflections ? 1f : 0f)
+				.m31(config.caustics)
+				.m32(config.sunStrength)
+				.m33(1f);
 
 			ByteBuffer waterVertices = water != null ? water.vertexBuffer() : ByteBuffer.allocateDirect(0);
 			int waterIndices = water != null ? water.drawState().indexCount() : 0;

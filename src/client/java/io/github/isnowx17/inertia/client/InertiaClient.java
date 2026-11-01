@@ -9,6 +9,7 @@ import io.github.isnowx17.inertia.client.render.FluidParticleRenderer;
 import io.github.isnowx17.inertia.client.render.FluidSurfaceRenderer;
 import io.github.isnowx17.inertia.client.render.WaterPass;
 import io.github.isnowx17.inertia.item.FluidBucketItem;
+import io.github.isnowx17.inertia.item.FluidSourceItem;
 import net.fabricmc.api.ClientModInitializer;
 import net.fabricmc.fabric.api.client.command.v2.ClientCommandRegistrationCallback;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
@@ -39,6 +40,7 @@ public final class InertiaClient implements ClientModInitializer {
 		FluidParticleRenderer particleRenderer = new FluidParticleRenderer(fluids);
 
 		FluidBucketItem.setClientHandler(fluids::releaseWater);
+		FluidSourceItem.setClientHandler(fluids::toggleSource);
 		ClientTickEvents.END_CLIENT_TICK.register(fluids::tick);
 		ClientPlayConnectionEvents.JOIN.register((handler, sender, client) -> fluids.onJoin(client));
 		ClientPlayConnectionEvents.DISCONNECT.register((handler, client) -> fluids.onDisconnect());

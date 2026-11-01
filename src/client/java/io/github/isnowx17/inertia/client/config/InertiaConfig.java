@@ -46,6 +46,18 @@ public final class InertiaConfig {
 	/** Custom: simulation steps per game tick (20 ticks per second). More is more stable but slower. */
 	public int substepsPerTick = 3;
 
+	/**
+	 * Highest number of water particles. The particle buffer starts at the quality level's size and
+	 * doubles whenever the water outgrows it, up to this limit. More water costs frame rate.
+	 */
+	public int particleLimit = 2_097_152;
+
+	/** Radius in blocks of the stream coming out of a flowing water source. */
+	public float sourceRadius = 0.3f;
+
+	/** Speed in blocks per second of the water leaving a flowing water source. */
+	public float sourceSpeed = 4.0f;
+
 	/** Particles further than this many blocks from the player are removed. */
 	public int despawnDistance = 96;
 
@@ -81,6 +93,15 @@ public final class InertiaConfig {
 
 	/** How quickly light is absorbed in the water (shader). Higher makes deep water darker and bluer. */
 	public float waterAbsorption = 1.0f;
+
+	/** Reflect the surroundings (blocks, entities) in the water (shader, screen-space reflections). */
+	public boolean reflections = true;
+
+	/** Strength of the moving light patterns on the ground under the water (shader). 0 turns them off. */
+	public float caustics = 1.0f;
+
+	/** Strength of the sun glint on the water (shader). */
+	public float sunStrength = 1.0f;
 
 	/** Size of rendered particles / spray droplets relative to the particle spacing. */
 	public float renderScale = 1.6f;
@@ -191,6 +212,9 @@ public final class InertiaConfig {
 		}
 		particleSpacing = clamp(orDefault(particleSpacing, 0.1f), 0.05f, 0.25f);
 		maxParticles = clamp(maxParticles, 4_096, 2_097_152);
+		particleLimit = clamp(particleLimit, 65_536, 8_388_608);
+		sourceRadius = clamp(orDefault(sourceRadius, 0.3f), 0.1f, 1.0f);
+		sourceSpeed = clamp(orDefault(sourceSpeed, 4f), 0.5f, 15f);
 		surfaceCellSize = clamp(orDefault(surfaceCellSize, 0.15f), 0.05f, 0.5f);
 		substepsPerTick = clamp(substepsPerTick, 1, 8);
 		despawnDistance = clamp(despawnDistance, 16, 512);
@@ -202,6 +226,8 @@ public final class InertiaConfig {
 		renderScale = clamp(orDefault(renderScale, 1.6f), 0.5f, 4f);
 		renderOpacity = clamp(orDefault(renderOpacity, 0.6f), 0.05f, 1f);
 		rippleStrength = clamp(orDefault(rippleStrength, 1f), 0f, 3f);
+		caustics = clamp(orDefault(caustics, 1f), 0f, 3f);
+		sunStrength = clamp(orDefault(sunStrength, 1f), 0f, 3f);
 		refractionStrength = clamp(orDefault(refractionStrength, 1f), 0f, 3f);
 		waterAbsorption = clamp(orDefault(waterAbsorption, 1f), 0.1f, 5f);
 		foamAmount = clamp(orDefault(foamAmount, 0.4f), 0f, 1f);
