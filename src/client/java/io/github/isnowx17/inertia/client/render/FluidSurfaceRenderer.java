@@ -55,8 +55,6 @@ public final class FluidSurfaceRenderer {
 	private static final Identifier FOAM_TEXTURE = Inertia.id("textures/fluid/foam.png");
 	private static final int SKY_REFLECTION = 0xD6E8FF;
 	private static final int FOAM_COLOR = 0xF4FAFF;
-	/** Speed (blocks/second) at which the surface itself is tinted fully white. */
-	private static final float SURFACE_FOAM_SPEED = 6f;
 	/** Spray droplets are drawn smaller than full particles. */
 	private static final float DROPLET_SCALE = 0.35f;
 	/** Never move geometry further ahead than this, in seconds (e.g. after a hitch). */
@@ -68,9 +66,6 @@ public final class FluidSurfaceRenderer {
 	private static final float ABSORPTION_PER_BLOCK = 1.1f;
 	/** Opacity of very shallow water in the simple rendering. */
 	private static final float SHALLOW_OPACITY = 0.12f;
-	/** Water slower than this (blocks/second) shows no foam; at FOAM_FULL_FLOW foam shows fully. */
-	private static final float FOAM_MIN_FLOW = 0.4f;
-	private static final float FOAM_FULL_FLOW = 1.6f;
 	/** Isolated particles slower than this (blocks/second) are not drawn as droplets. */
 	private static final float MIN_DROPLET_SPEED = 1.0f;
 	/** Floats per collected foam particle: position, flow velocity, lifetime, type. */
@@ -206,8 +201,8 @@ public final class FluidSurfaceRenderer {
 			float size = result.spacing * config.renderScale * 0.45f * config.foamSize;
 			// With the shader the water surface is in the depth buffer when foam is drawn; pull the foam
 			// slightly towards the camera so foam floating just below the surface stays visible.
-			// With the shader, foam on the surface is drawn by the water itself; only spray stays separate.
-			foam = prepareFoam(level, result, cam, foamDt, size, shader ? FOAM_DEPTH_PULL : 0f, !shader);
+			// Only spray is drawn; there is no foam on the surface.
+			foam = prepareFoam(level, result, cam, foamDt, size, shader ? FOAM_DEPTH_PULL : 0f, false);
 		}
 
 		if (shader) {
@@ -432,12 +427,8 @@ public final class FluidSurfaceRenderer {
 			normals[i * 3 + 1] = v[o + 4];
 			normals[i * 3 + 2] = v[o + 5];
 
-			float speed = Mth.sqrt(vx * vx + vy * vy + vz * vz);
-			float churn = Mth.clamp(speed / SURFACE_FOAM_SPEED, 0f, 1f);
-			// Foam only shows on moving water: once the water settles, the foam disappears.
-			float motion = smoothstep(FOAM_MIN_FLOW, FOAM_FULL_FLOW, speed);
-			float surfaceFoam = v[o + 10] * motion;
-			foam[i] = Mth.clamp(surfaceFoam + churn * 0.3f, 0f, 1f);
+			// No foam on the surface.
+			foam[i] = 0f;
 			thickness[i] = v[o + 9];
 
 			if (forShader) {
@@ -454,8 +445,7 @@ public final class FluidSurfaceRenderer {
 				float fresnel = 0.04f + 0.96f * pow5(1f - cos);
 
 				int rgb = lerpRgb(body, SKY_REFLECTION, fresnel * 0.7f);
-				rgb = lerpRgb(rgb, FOAM_COLOR, Math.max(churn * 0.5f, surfaceFoam * 0.85f));
-				float alpha = bodyAlpha + (1f - bodyAlpha) * Math.max(fresnel, churn * 0.4f);
+				float alpha = bodyAlpha + (1f - bodyAlpha) * fresnel;
 				colors[i] = (Mth.clamp(Math.round(alpha * 255f), 0, 255) << 24) | rgb;
 			}
 
@@ -862,11 +852,6 @@ public final class FluidSurfaceRenderer {
 			lightCache.put(key, light);
 		}
 		return light;
-	}
-
-	private static float smoothstep(float edge0, float edge1, float x) {
-		float t = Mth.clamp((x - edge0) / (edge1 - edge0), 0f, 1f);
-		return t * t * (3f - 2f * t);
 	}
 
 	private static float pow5(float x) {

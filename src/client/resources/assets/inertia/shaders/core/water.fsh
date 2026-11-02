@@ -6,7 +6,7 @@
 // The scene behind the water (colour and depth, copied right before the water is drawn) is
 // sampled through a ripple-distorted offset (refraction), absorbed according to the distance the
 // light travels through the water (depth-dependent colour and transparency), and mixed with a sky
-// reflection by the Fresnel term. A sharp sun highlight and foam are added on top.
+// reflection by the Fresnel term. A sharp sun highlight is added on top.
 
 #include <minecraft:fog.glsl>
 #include <minecraft:dynamictransforms.glsl>
@@ -168,7 +168,6 @@ void main() {
     vec3 deepColor = TextureMat[1].rgb;
     vec3 sunDirection = normalize(ColorModulator.xyz);
     float daylight = ColorModulator.w;
-    float foam = surfaceParams.x;
 
     vec3 normal = normalize(surfaceNormal);
     vec3 toCamera = normalize(-relativePosition);
@@ -247,22 +246,8 @@ void main() {
 
     vec3 color = mix(body, reflectionColor, fresnel) + sunColor;
 
-    // Foam: a lacy web of fine filaments at two scales, broken up into bubbles, gathering in
-    // patches. The amount of foam decides how much of the web shows; it never becomes a solid sheet.
-    vec2 foamUv = worldPosition.xz;
-    float web1 = causticLayer(foamUv * 2.2 + vec2(time * 0.05, -time * 0.04), time * 0.35);
-    float web2 = causticLayer(foamUv * 5.0 + vec2(-time * 0.08, time * 0.07), time * 0.5);
-    float bubbles = noised(foamUv * 16.0 + vec2(time * 0.3, -time * 0.2)).x;
-    float patches = noised(foamUv * 0.7 + vec2(time * 0.03, 0.0)).x;
-    float pattern = pow(max(web1, web2 * 0.7), 0.6) * (0.7 + 0.3 * bubbles);
-    float churn = clamp(foam, 0.0, 1.0);
-    float cover = clamp(churn * (0.5 + patches), 0.0, 1.0);
-    float foamThreshold = 0.78 - cover * 0.5;
-    float foamAmount = smoothstep(foamThreshold, foamThreshold + 0.3, pattern) * smoothstep(0.03, 0.3, churn);
-    color = mix(color, vec3(0.95, 0.97, 1.0) * diffuseLight * lightMapColor.rgb, foamAmount * 0.7);
-
     // Soft shoreline: very thin water fades into the ground instead of ending in a hard edge.
-    float edge = smoothstep(0.0, TextureMat[1].w, distanceInWater + fresnel * 0.2 + foamAmount);
+    float edge = smoothstep(0.0, TextureMat[1].w, distanceInWater + fresnel * 0.2);
     color *= texture(Sampler0, vec2(0.5)).rgb;
 
     vec4 result = vec4(color, edge * vertexColor.a);

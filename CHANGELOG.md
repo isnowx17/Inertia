@@ -3,6 +3,14 @@
 All notable changes to Inertia are documented here. Versioning rules are described in
 [PLAN.md](PLAN.md#5-sürümleme).
 
+## [0.4.5] — Beta
+
+### Removed
+- The foam is gone: no foam pattern in the water shader, no white tint on fast water and no
+  foam streaks on the surface.
+- The remaining spray flecks (`foam` setting) are off by default; existing config files are
+  switched off too. Turn `foam` back on in `config/inertia.json` to get the spray back.
+
 ## [0.4.4] — Beta
 
 ### Fixed
