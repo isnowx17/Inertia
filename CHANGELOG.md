@@ -3,6 +3,13 @@
 All notable changes to Inertia are documented here. Versioning rules are described in
 [PLAN.md](PLAN.md#5-sürümleme).
 
+## [0.4.4] — Beta
+
+### Fixed
+- Still water no longer shows foam: foam is tied to the local flow speed and only appears where
+  the water moves (from 0.4 blocks/second, fully at 1.6); when the water settles it disappears.
+- The sun glint is less blown out (no wide white halo).
+
 ## [0.4.3] — Beta
 
 ### Fixed

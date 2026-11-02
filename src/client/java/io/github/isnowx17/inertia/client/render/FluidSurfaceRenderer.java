@@ -68,6 +68,9 @@ public final class FluidSurfaceRenderer {
 	private static final float ABSORPTION_PER_BLOCK = 1.1f;
 	/** Opacity of very shallow water in the simple rendering. */
 	private static final float SHALLOW_OPACITY = 0.12f;
+	/** Water slower than this (blocks/second) shows no foam; at FOAM_FULL_FLOW foam shows fully. */
+	private static final float FOAM_MIN_FLOW = 0.4f;
+	private static final float FOAM_FULL_FLOW = 1.6f;
 	/** Isolated particles slower than this (blocks/second) are not drawn as droplets. */
 	private static final float MIN_DROPLET_SPEED = 1.0f;
 	/** Floats per collected foam particle: position, flow velocity, lifetime, type. */
@@ -431,7 +434,9 @@ public final class FluidSurfaceRenderer {
 
 			float speed = Mth.sqrt(vx * vx + vy * vy + vz * vz);
 			float churn = Mth.clamp(speed / SURFACE_FOAM_SPEED, 0f, 1f);
-			float surfaceFoam = v[o + 10];
+			// Foam only shows on moving water: once the water settles, the foam disappears.
+			float motion = smoothstep(FOAM_MIN_FLOW, FOAM_FULL_FLOW, speed);
+			float surfaceFoam = v[o + 10] * motion;
 			foam[i] = Mth.clamp(surfaceFoam + churn * 0.3f, 0f, 1f);
 			thickness[i] = v[o + 9];
 
@@ -857,6 +862,11 @@ public final class FluidSurfaceRenderer {
 			lightCache.put(key, light);
 		}
 		return light;
+	}
+
+	private static float smoothstep(float edge0, float edge1, float x) {
+		float t = Mth.clamp((x - edge0) / (edge1 - edge0), 0f, 1f);
+		return t * t * (3f - 2f * t);
 	}
 
 	private static float pow5(float x) {
