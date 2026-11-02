@@ -3,6 +3,14 @@
 All notable changes to Inertia are documented here. Versioning rules are described in
 [PLAN.md](PLAN.md#5-sürümleme).
 
+## [0.6.1] — Beta
+
+### Changed
+- The default quality is now `ultra`: 4096 particles per block of water, 0.1-block surface cells,
+  4 sub-steps per tick, up to 250,000 foam tracers and a foam map with 32 texels per block.
+  Config files that still have the previous default `high` switch to `ultra`. It needs a strong
+  NVIDIA GPU; set `quality` to `high` (or lower) for more FPS.
+
 ## [0.6.0] — Beta
 
 ### Changed
