@@ -3,6 +3,14 @@
 All notable changes to Inertia are documented here. Versioning rules are described in
 [PLAN.md](PLAN.md#5-sürümleme).
 
+## [1.1.1]
+
+### Fixed
+- Water from a flowing water source no longer falls in separate lumps. The source now lets out a
+  steady flow: every tick the same amount of water appears at the top of its block, moving down at
+  `sourceFlow` blocks per second, so it forms one continuous column. Only when the water cannot get
+  away (a pool below) does the block fill up and the water spread out gently.
+
 ## [1.1.0]
 
 ### Changed

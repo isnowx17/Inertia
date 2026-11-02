@@ -53,8 +53,8 @@ public final class InertiaConfig {
 	public int particleLimit = 2_097_152;
 
 	/**
-	 * Most water a flowing water source adds, in blocks of water per second. The source keeps its
-	 * block full; this only limits how fast it refills when the water drains quickly.
+	 * Water a flowing water source lets out, in blocks of water per second; it leaves the source
+	 * block at this many blocks per second, as one continuous stream.
 	 */
 	public float sourceFlow = 3.0f;
 
