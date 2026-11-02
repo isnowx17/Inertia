@@ -86,4 +86,5 @@ Kurallar:
 - **0.3.0 (yayınlandı):** Akan su kovası (sürekli su kaynağı), otomatik büyüyen parçacık tamponu (pratikte sınırsız, `particleLimit`), ekran uzayı yansımaları, kostikler; kendi su shader'ı (kırılma, piksel bazında derinliğe göre renk ve berraklık, dalgacıklar, gökyüzü yansıması, güneş parlaması); basit çizimde de köşe noktası bazında derinlik rengi; varsayılan kalite `high`.
 - **0.4.0 (yayınlandı):** Performans (fizik adımı ayrı thread'de, yüzey güncellemesi sınırlı) ve suyun üstüne yatan, akışla uzayan köpük çizgileri; shader'da mermer köpük deseni.
 - **0.4.5 (yayınlandı):** Köpük kaldırıldı (shader deseni, hızlı suda beyazlaşma, yüzey köpüğü); sıçrama tanecikleri varsayılan olarak kapalı.
+- **0.5.0 (yayınlandı):** Yeni köpük: Skaffy'nin Realistic Water modundan (izinle) uyarlandı; köpük miktarı → kaplama eğrisi ve kabarcık ağı (foam lace).
 - **Aday:** Suda yüzen cisimler (tekne, eşya) — v1 planında "olmayacaklar" listesindeydi, kullanıcı onayıyla ele alınacak.

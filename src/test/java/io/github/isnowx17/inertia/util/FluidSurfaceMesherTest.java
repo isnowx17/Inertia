@@ -242,7 +242,7 @@ class FluidSurfaceMesherTest {
 		float far = 0f;
 		for (int v = 0; v < mesh.vertexCount; v++) {
 			float f = mesh.vertices[v * FluidSurfaceMesher.VERTEX_STRIDE + 10];
-			assertTrue(f >= 0f && f <= 1f);
+			assertTrue(f >= 0f && Float.isFinite(f));
 			float dx = vx(mesh, v) - 0.25f;
 			float dz = vz(mesh, v) - 0.25f;
 			if (vy(mesh, v) > 0.8f && dx * dx + dz * dz < 0.04f) {
@@ -252,7 +252,8 @@ class FluidSurfaceMesherTest {
 				far = Math.max(far, f);
 			}
 		}
-		assertTrue(near > 0.05f, "no foam next to the foam particle: " + near);
+		// One particle spread over its splat area (about 0.13 square blocks here): several per block².
+		assertTrue(near > 1f, "no foam next to the foam particle: " + near);
 		assertEquals(0f, far, 1e-6f);
 
 		FluidSurfaceMesher.Mesh clean = game.mesh(p, null, n * n * n, null);

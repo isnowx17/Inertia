@@ -6,7 +6,10 @@
 // The scene behind the water (colour and depth, copied right before the water is drawn) is
 // sampled through a ripple-distorted offset (refraction), absorbed according to the distance the
 // light travels through the water (depth-dependent colour and transparency), and mixed with a sky
-// reflection by the Fresnel term. A sharp sun highlight is added on top.
+// reflection by the Fresnel term. A sharp sun highlight and foam are added on top.
+//
+// The foam (coverage curve and foam lace) is adapted from Realistic Water by Skaffy,
+// https://github.com/sskaffy/Realistic-Water, and used with the author's permission.
 
 #include <minecraft:fog.glsl>
 #include <minecraft:dynamictransforms.glsl>
@@ -160,6 +163,48 @@ vec4 traceReflection(vec3 origin, vec3 direction, bool flipY) {
     return vec4(0.0);
 }
 
+// Foam, adapted from Realistic Water by Skaffy (https://github.com/sskaffy/Realistic-Water),
+// used with permission.
+const float FOAM_BUBBLE_SIZE = 0.05;
+
+uint foamHash(uint x) {
+    x ^= x >> 16;
+    x *= 0x7feb352du;
+    x ^= x >> 15;
+    x *= 0x846ca68bu;
+    x ^= x >> 16;
+    return x;
+}
+
+float foamRand(inout uint state) {
+    state = foamHash(state + 0x9e3779b9u);
+    return float(state >> 8) * (1.0 / 16777216.0);
+}
+
+// Foam lace: the walls between bubbles (Voronoi cell borders). Denser foam has thicker walls;
+// when a bubble is smaller than a pixel the lace fades into an even grey.
+float foamLace(vec2 p, float coverage, float footprint) {
+    vec2 q = p / FOAM_BUBBLE_SIZE;
+    ivec2 cell = ivec2(floor(q));
+    float f1 = 9.0;
+    float f2 = 9.0;
+    for (int k = 0; k < 9; k++) {
+        ivec2 c = cell + ivec2(k % 3 - 1, k / 3 - 1);
+        uint s = foamHash(uint(c.x) * 73856093u ^ uint(c.y) * 19349663u);
+        vec2 feature = vec2(c) + 0.1 + 0.8 * vec2(foamRand(s), foamRand(s));
+        float d = length(q - feature);
+        if (d < f1) {
+            f2 = f1;
+            f1 = d;
+        } else if (d < f2) {
+            f2 = d;
+        }
+    }
+    float wall = 1.0 - smoothstep(0.0, 0.06 + 0.6 * coverage, f2 - f1);
+    float detail = smoothstep(0.7, 2.5, FOAM_BUBBLE_SIZE / max(footprint, 1e-5));
+    return mix(0.55, wall, detail);
+}
+
 void main() {
     float time = TextureMat[0][0];
     float rippleStrength = TextureMat[0][1];
@@ -168,6 +213,7 @@ void main() {
     vec3 deepColor = TextureMat[1].rgb;
     vec3 sunDirection = normalize(ColorModulator.xyz);
     float daylight = ColorModulator.w;
+    float foam = max(surfaceParams.x, 0.0);
 
     vec3 normal = normalize(surfaceNormal);
     vec3 toCamera = normalize(-relativePosition);
@@ -246,11 +292,21 @@ void main() {
 
     vec3 color = mix(body, reflectionColor, fresnel) + sunColor;
 
+    // Foam: the accumulated foam alpha becomes coverage (at most 90 %), broken up by the lace.
+    // (Derivatives are taken outside the branch, where they are well defined.)
+    float footprint = max(length(dFdx(worldPosition)), length(dFdy(worldPosition)));
+    float foamCoverage = 0.0;
+    if (foam > 1e-4 && TextureMat[3][3] > 0.0) {
+        foamCoverage = min(1.0 - exp(-foam * TextureMat[3][3]), 0.9);
+        foamCoverage *= foamLace(worldPosition.xz, foamCoverage, footprint);
+        color = mix(color, vec3(1.0) * diffuseLight * lightMapColor.rgb, foamCoverage);
+    }
+
     // Soft shoreline: very thin water fades into the ground instead of ending in a hard edge.
     float edge = smoothstep(0.0, TextureMat[1].w, distanceInWater + fresnel * 0.2);
     color *= texture(Sampler0, vec2(0.5)).rgb;
 
-    vec4 result = vec4(color, edge * vertexColor.a);
+    vec4 result = vec4(color, mix(edge * vertexColor.a, 1.0, foamCoverage));
     fragColor = apply_fog(result, sphericalVertexDistance, cylindricalVertexDistance,
         FogEnvironmentalStart, FogEnvironmentalEnd, FogRenderDistanceStart, FogRenderDistanceEnd, FogColor);
 }
