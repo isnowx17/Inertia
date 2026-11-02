@@ -21,7 +21,7 @@ public final class InertiaConfig {
 	public static final String RENDER_SURFACE = "surface";
 	public static final String RENDER_PARTICLES = "particles";
 	public static final String QUALITY_CUSTOM = "custom";
-	private static final int CURRENT_VERSION = 5;
+	private static final int CURRENT_VERSION = 6;
 
 	/** Version of this file's defaults; older files get changed defaults migrated on load. */
 	public int configVersion = 0;
@@ -109,10 +109,11 @@ public final class InertiaConfig {
 	/** Opacity of the water when looking straight into it, 0..1. */
 	public float renderOpacity = 0.6f;
 
-	// Foam: PhysX spawns foam, spray and bubble particles where the water splashes and churns.
+	// Spray: PhysX spawns diffuse particles where the water splashes and churns. There is no foam
+	// on the water surface; only the spray flying off splashes is drawn, as small white flecks.
 
-	/** Whether foam, spray and bubbles are simulated and drawn. */
-	public boolean foam = true;
+	/** Whether spray particles are simulated and drawn. Off by default. */
+	public boolean foam = false;
 
 	/** How easily foam forms, 0..1. */
 	public float foamAmount = 0.35f;
@@ -218,6 +219,10 @@ public final class InertiaConfig {
 			if (foamLifetime == 4.0f || foamLifetime == 2.5f) {
 				foamLifetime = 3.0f;
 			}
+		}
+		if (configVersion < 6) {
+			// 0.4.5: the foam was removed; the remaining spray is off by default.
+			foam = false;
 		}
 		configVersion = CURRENT_VERSION;
 	}

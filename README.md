@@ -61,10 +61,10 @@ bucket are unchanged. The water is not saved: it disappears when you leave the w
 | `surfaceThreshold` | 0.3 | Surface level as a fraction of still-water density. |
 | `renderScale` | 1.6 | Size of spray droplets and foam relative to the particle spacing. |
 | `renderOpacity` | 0.6 | Opacity of the water when looking straight into it. |
-| `foam` | true | Simulate and draw foam, spray and bubbles. |
-| `foamAmount` | 0.35 | How easily foam forms, 0–1. |
-| `foamLifetime` | 3.0 | Seconds foam lives; longer-lived foam forms longer streaks. |
-| `foamSize` | 1.0 | Size of the foam streaks. |
+| `foam` | false | Simulate and draw spray (small white flecks flying off splashes). |
+| `foamAmount` | 0.35 | How easily spray forms, 0–1. |
+| `foamLifetime` | 3.0 | Seconds spray lives. |
+| `foamSize` | 1.0 | Size of the spray flecks. |
 | `waterFriction` | 0.3 | Friction against blocks; higher makes water pool instead of sliding away. |
 | `waterDamping` | 0.05 | Velocity damping. |
 | `waterViscosity` | 0.01 | Viscosity; very high values feel like honey. |
@@ -124,9 +124,8 @@ jars, creates the tag `v<version>` and publishes the release.
   depths), screen-space reflections of the surroundings, caustics on the ground below, Fresnel
   sky reflection and a sun glint. It is registered as an optional pipeline, so a
   compile failure only switches back to the simple rendering.
-- **Foam:** PhysX diffuse particles (foam, spray, bubbles) spawn where the water splashes or
-  churns. They are spread over the surface mesh as a foam layer that the water shader draws as
-  marbled white foam drifting with the current; spray is drawn as small soft flecks.
+- **Spray (optional, off by default):** PhysX diffuse particles spawn where the water splashes
+  and are drawn as small soft flecks. The water surface itself has no foam.
 - **Threads:** the GPU step runs on a physics thread, the surface is meshed on a worker pool, and
   the game thread only collects results and draws.
 
