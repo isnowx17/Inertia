@@ -28,7 +28,11 @@ import java.util.stream.IntStream;
  * Instances are not thread-safe: one {@link #mesh} call at a time.
  */
 public final class FluidSurfaceMesher {
-	/** Floats per output vertex: x, y, z, nx, ny, nz, vx, vy, vz, thickness, foam. */
+	/**
+	 * Floats per output vertex: x, y, z, nx, ny, nz, vx, vy, vz, thickness, foam. Foam is the number
+	 * of surface foam particles per square block around the vertex, each weighted by its remaining
+	 * life (0 to 1).
+	 */
 	public static final int VERTEX_STRIDE = 11;
 	/** Water thickness is measured at most this many cells into the water. */
 	private static final int MAX_THICKNESS_STEPS = 48;
@@ -46,10 +50,8 @@ public final class FluidSurfaceMesher {
 	/** Foam floats among the top particles, inside the drawn surface (about twice the threshold);
 	 * bubbles deep in the water sit near the still-water density (over three times the threshold). */
 	private static final float FOAM_BAND_MAX = 2.0f;
-	/** Converts the splatted foam weight around a vertex into a 0..1 foam amount. */
-	private static final float FOAM_GAIN = 0.6f;
-	/** Foam fades out over the last this many seconds of its life. */
-	private static final float FOAM_FADE_SECONDS = 0.8f;
+	/** Foam strength follows min(1, 0.8 * remaining life), as in Realistic Water's whitewater. */
+	private static final float FOAM_LIFE_FACTOR = 0.8f;
 	private static final int PAD = BRICK + 1;
 	private static final int PAD_VOLUME = PAD * PAD * PAD;
 	/** Particles below this fraction of the threshold count as isolated spray. */
@@ -174,6 +176,15 @@ public final class FluidSurfaceMesher {
 		return mesh;
 	}
 
+	/**
+	 * Turns the splatted foam weight into foam particles per square block of surface: the splat
+	 * kernel (1 - d²/r²)² integrates to πr²/3 over a plane through the particle.
+	 */
+	private float foamNormalization() {
+		float r = radius * 0.75f;
+		return 3f / ((float) Math.PI * r * r);
+	}
+
 	/** Adds foam particles near the surface to the foam channel of the existing bricks. */
 	private void splatFoam(float[] foam, int foamCount) {
 		float inv = 1f / cellSize;
@@ -195,7 +206,7 @@ public final class FluidSurfaceMesher {
 			if (density < bandMin || density > bandMax) {
 				continue; // spray in the air or bubbles deep inside: not surface foam
 			}
-			float strength = Math.min(1f, life / FOAM_FADE_SECONDS);
+			float strength = Math.min(1f, life * FOAM_LIFE_FACTOR);
 			int x0 = (int) Math.ceil((px - r) * inv);
 			int x1 = (int) Math.floor((px + r) * inv);
 			int y0 = (int) Math.ceil((py - r) * inv);
@@ -745,7 +756,7 @@ public final class FluidSurfaceMesher {
 		v[o + 7] = vy;
 		v[o + 8] = vz;
 		v[o + 9] = thickness(v[o], v[o + 1], v[o + 2], nx, ny, nz);
-		v[o + 10] = Math.min(1f, foamSum * 0.125f * FOAM_GAIN);
+		v[o + 10] = foamSum * 0.125f * foamNormalization();
 		return index;
 	}
 

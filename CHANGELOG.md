@@ -3,6 +3,18 @@
 All notable changes to Inertia are documented here. Versioning rules are described in
 [PLAN.md](PLAN.md#5-sürümleme).
 
+## [0.5.0] — Beta
+
+### Added
+- New foam, adapted from [Realistic Water](https://github.com/sskaffy/Realistic-Water) by
+  Skaffy and used with the author's permission. Foam particles on the surface add up to a foam
+  amount that turns into coverage the way Realistic Water does it (`1 - exp(-amount × coverage)`,
+  at most 90 %). The coverage is broken up by Realistic Water's foam lace, a fine web of bubble
+  walls (5 cm bubbles) that thickens where the foam is dense and fades to an even tone when the
+  bubbles are smaller than a pixel.
+- `foamCoverage` setting (default 1.2). `foamSize` now scales the foam splats.
+- Foam is on again by default (also in existing config files).
+
 ## [0.4.5] — Beta
 
 ### Removed

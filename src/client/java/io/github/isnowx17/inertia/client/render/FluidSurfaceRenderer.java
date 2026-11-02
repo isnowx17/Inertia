@@ -66,6 +66,14 @@ public final class FluidSurfaceRenderer {
 	private static final float ABSORPTION_PER_BLOCK = 1.1f;
 	/** Opacity of very shallow water in the simple rendering. */
 	private static final float SHALLOW_OPACITY = 0.12f;
+	/**
+	 * Radius in blocks of one foam splat at foamSize 1 (Realistic Water: whitewater size 0.012 times
+	 * foam size 3). A splat adds 0.9 * exp(-2.5 r²) alpha over its disc.
+	 */
+	private static final float FOAM_SPLAT_RADIUS = 0.036f;
+	/** Foam fades in between these flow speeds (blocks/second), so settled water clears up. */
+	private static final float FOAM_MIN_FLOW = 0.2f;
+	private static final float FOAM_FULL_FLOW = 1.0f;
 	/** Isolated particles slower than this (blocks/second) are not drawn as droplets. */
 	private static final float MIN_DROPLET_SPEED = 1.0f;
 	/** Floats per collected foam particle: position, flow velocity, lifetime, type. */
@@ -201,7 +209,7 @@ public final class FluidSurfaceRenderer {
 			float size = result.spacing * config.renderScale * 0.45f * config.foamSize;
 			// With the shader the water surface is in the depth buffer when foam is drawn; pull the foam
 			// slightly towards the camera so foam floating just below the surface stays visible.
-			// Only spray is drawn; there is no foam on the surface.
+			// Surface foam is drawn by the water itself; only spray is drawn as flecks.
 			foam = prepareFoam(level, result, cam, foamDt, size, shader ? FOAM_DEPTH_PULL : 0f, false);
 		}
 
@@ -402,6 +410,11 @@ public final class FluidSurfaceRenderer {
 		int[] colors = new int[vertexCount];
 		int[] lights = new int[vertexCount];
 		float[] foam = new float[vertexCount];
+		InertiaConfig config = manager.config();
+		// Foam particles per square block -> accumulated foam alpha: each splat contributes the
+		// integral of 0.9 * exp(-2.5 d²/R²) over its disc, 0.9 * π R² / 2.5.
+		float splatRadius = FOAM_SPLAT_RADIUS * config.foamSize;
+		float foamAlphaPerParticle = config.foam ? 0.9f * (float) Math.PI * splatRadius * splatRadius / 2.5f : 0f;
 		float[] thickness = new float[vertexCount];
 		BlockPos.MutableBlockPos block = new BlockPos.MutableBlockPos();
 		float deepOpacity = Mth.clamp(opacity + 0.3f, 0.3f, 0.95f);
@@ -427,8 +440,8 @@ public final class FluidSurfaceRenderer {
 			normals[i * 3 + 1] = v[o + 4];
 			normals[i * 3 + 2] = v[o + 5];
 
-			// No foam on the surface.
-			foam[i] = 0f;
+			float speed = Mth.sqrt(vx * vx + vy * vy + vz * vz);
+			foam[i] = v[o + 10] * foamAlphaPerParticle * smoothstep(FOAM_MIN_FLOW, FOAM_FULL_FLOW, speed);
 			thickness[i] = v[o + 9];
 
 			if (forShader) {
@@ -445,7 +458,9 @@ public final class FluidSurfaceRenderer {
 				float fresnel = 0.04f + 0.96f * pow5(1f - cos);
 
 				int rgb = lerpRgb(body, SKY_REFLECTION, fresnel * 0.7f);
-				float alpha = bodyAlpha + (1f - bodyAlpha) * fresnel;
+				float foamCover = Math.min(1f - (float) Math.exp(-foam[i] * config.foamCoverage), 0.9f);
+				rgb = lerpRgb(rgb, FOAM_COLOR, foamCover);
+				float alpha = bodyAlpha + (1f - bodyAlpha) * Math.max(fresnel, foamCover);
 				colors[i] = (Mth.clamp(Math.round(alpha * 255f), 0, 255) << 24) | rgb;
 			}
 
@@ -566,7 +581,7 @@ public final class FluidSurfaceRenderer {
 				.m30(config.reflections ? 1f : 0f)
 				.m31(config.caustics)
 				.m32(config.sunStrength)
-				.m33(1f);
+				.m33(config.foam ? config.foamCoverage : 0f);
 
 			ByteBuffer waterVertices = water != null ? water.vertexBuffer() : ByteBuffer.allocateDirect(0);
 			int waterIndices = water != null ? water.drawState().indexCount() : 0;
@@ -852,6 +867,11 @@ public final class FluidSurfaceRenderer {
 			lightCache.put(key, light);
 		}
 		return light;
+	}
+
+	private static float smoothstep(float edge0, float edge1, float x) {
+		float t = Mth.clamp((x - edge0) / (edge1 - edge0), 0f, 1f);
+		return t * t * (3f - 2f * t);
 	}
 
 	private static float pow5(float x) {
