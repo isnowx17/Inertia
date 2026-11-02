@@ -3,6 +3,26 @@
 All notable changes to Inertia are documented here. Versioning rules are described in
 [PLAN.md](PLAN.md#5-sürümleme).
 
+## [0.6.0] — Beta
+
+### Changed
+- Completely new foam. Foam is now made of many small foam tracers that float on the water
+  surface: they are spawned where the water churns (fast flow, splashes, and where PhysX spawns
+  fresh diffuse particles at the surface), drift with the surface flow, are stirred by small
+  eddies and pushed aside by boils (upwellings), so the foam stretches into swirling lines, rings
+  and patches and fades after a few seconds. Still water stays clear.
+- The foam is drawn from a fine top-down foam map (about 4 cm per texel, with mip levels) that
+  moves with the surface between rebuilds; thin foam is translucent, dense foam opaque white, and
+  up close it breaks up into fine bubbles. It only shows on the surface it floats on, not on a
+  stream passing above it.
+- The foam lace adapted from Realistic Water (0.5.0) is no longer used.
+- `foamSize` is now the width of the foam lines and `foamCoverage` (default 1.0) how quickly
+  overlapping foam turns white; old values of `foamCoverage` are reset.
+
+### Performance
+- The foam runs on the surface worker with the meshing (about 3 ms per rebuild for 40,000
+  tracers, 12 ms for 150,000, in parallel on the spare cores).
+
 ## [0.5.0] — Beta
 
 ### Added

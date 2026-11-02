@@ -87,4 +87,5 @@ Kurallar:
 - **0.4.0 (yayınlandı):** Performans (fizik adımı ayrı thread'de, yüzey güncellemesi sınırlı) ve suyun üstüne yatan, akışla uzayan köpük çizgileri; shader'da mermer köpük deseni.
 - **0.4.5 (yayınlandı):** Köpük kaldırıldı (shader deseni, hızlı suda beyazlaşma, yüzey köpüğü); sıçrama tanecikleri varsayılan olarak kapalı.
 - **0.5.0 (yayınlandı):** Yeni köpük: Skaffy'nin Realistic Water modundan (izinle) uyarlandı; köpük miktarı → kaplama eğrisi ve kabarcık ağı (foam lace).
+- **0.6.0 (yayınlandı):** Tamamen yeni köpük: yüzeyde akıntıyla sürüklenen, girdaplar ve kaynamalarla (boil) çizgi ve halkalara toplanan köpük taneleri; ince köpük haritası (≈4 cm), yakından kabarcık dokusu.
 - **Aday:** Suda yüzen cisimler (tekne, eşya) — v1 planında "olmayacaklar" listesindeydi, kullanıcı onayıyla ele alınacak.

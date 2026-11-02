@@ -21,19 +21,15 @@ import java.util.stream.IntStream;
  * particles therefore melt into a single smooth sheet instead of being drawn as separate balls.
  *
  * <p>Each vertex carries a normal (from the density gradient) and the local flow velocity, which
- * the renderer uses to move the surface between rebuilds and to draw foam.
+ * the renderer uses to move the surface between rebuilds.
  *
  * <p>The grid is stored in 16³ bricks. Splatting and extraction are split by brick, so every brick
  * is written by exactly one task and the work runs in parallel on the given pool without locks.
  * Instances are not thread-safe: one {@link #mesh} call at a time.
  */
 public final class FluidSurfaceMesher {
-	/**
-	 * Floats per output vertex: x, y, z, nx, ny, nz, vx, vy, vz, thickness, foam. Foam is the number
-	 * of surface foam particles per square block around the vertex, each weighted by its remaining
-	 * life (0 to 1).
-	 */
-	public static final int VERTEX_STRIDE = 11;
+	/** Floats per output vertex: x, y, z, nx, ny, nz, vx, vy, vz, thickness. */
+	public static final int VERTEX_STRIDE = 10;
 	/** Water thickness is measured at most this many cells into the water. */
 	private static final int MAX_THICKNESS_STEPS = 48;
 
@@ -42,16 +38,7 @@ public final class FluidSurfaceMesher {
 	private static final int BRICK_MASK = BRICK - 1;
 	private static final int BRICK_VOLUME = BRICK * BRICK * BRICK;
 	/** Floats per node in a brick: density and the weighted velocity sum. */
-	private static final int CHANNELS = 5;
-	/** Channel holding the splatted foam (after density and the three velocity components). */
-	private static final int FOAM_CHANNEL = 4;
-	/** Foam particles count when the field density there is within this band around the threshold. */
-	private static final float FOAM_BAND_MIN = 0.15f;
-	/** Foam floats among the top particles, inside the drawn surface (about twice the threshold);
-	 * bubbles deep in the water sit near the still-water density (over three times the threshold). */
-	private static final float FOAM_BAND_MAX = 2.0f;
-	/** Foam strength follows min(1, 0.8 * remaining life), as in Realistic Water's whitewater. */
-	private static final float FOAM_LIFE_FACTOR = 0.8f;
+	private static final int CHANNELS = 4;
 	private static final int PAD = BRICK + 1;
 	private static final int PAD_VOLUME = PAD * PAD * PAD;
 	/** Particles below this fraction of the threshold count as isolated spray. */
@@ -67,7 +54,6 @@ public final class FluidSurfaceMesher {
 
 	private final ThreadLocal<float[]> padDensity = ThreadLocal.withInitial(() -> new float[PAD_VOLUME]);
 	private final ThreadLocal<float[]> padVelocity = ThreadLocal.withInitial(() -> new float[PAD_VOLUME * 3]);
-	private final ThreadLocal<float[]> padFoam = ThreadLocal.withInitial(() -> new float[PAD_VOLUME]);
 
 	/**
 	 * @param cellSize  grid spacing in blocks
@@ -151,93 +137,15 @@ public final class FluidSurfaceMesher {
 	 * @param target     mesh to fill (reused to avoid allocations), or {@code null} for a new one
 	 */
 	public Mesh mesh(float[] positions, float[] velocities, int count, Mesh target) {
-		return mesh(positions, velocities, count, null, 0, target);
-	}
-
-	/**
-	 * Builds the surface and spreads foam particles over it: every vertex gets a foam amount from
-	 * the foam particles floating in the surface band around it.
-	 *
-	 * @param foam      xyz and remaining lifetime (seconds) per foam particle, or {@code null}
-	 * @param foamCount number of foam particles
-	 */
-	public Mesh mesh(float[] positions, float[] velocities, int count, float[] foam, int foamCount, Mesh target) {
 		Mesh mesh = target != null ? target : new Mesh();
 		mesh.vertexCount = 0;
 		mesh.quadCount = 0;
 
 		bricks = splat(positions, velocities, count);
 		if (!bricks.isEmpty()) {
-			if (foam != null && foamCount > 0) {
-				splatFoam(foam, foamCount);
-			}
 			extract(mesh);
 		}
 		return mesh;
-	}
-
-	/**
-	 * Turns the splatted foam weight into foam particles per square block of surface: the splat
-	 * kernel (1 - d²/r²)² integrates to πr²/3 over a plane through the particle.
-	 */
-	private float foamNormalization() {
-		float r = radius * 0.75f;
-		return 3f / ((float) Math.PI * r * r);
-	}
-
-	/** Adds foam particles near the surface to the foam channel of the existing bricks. */
-	private void splatFoam(float[] foam, int foamCount) {
-		float inv = 1f / cellSize;
-		float r = radius * 0.75f;
-		float r2 = r * r;
-		float bandMin = threshold * FOAM_BAND_MIN;
-		float bandMax = threshold * FOAM_BAND_MAX;
-		long lastKey = Long.MIN_VALUE;
-		float[] lastBrick = null;
-		for (int i = 0; i < foamCount; i++) {
-			float px = foam[i * 4];
-			float py = foam[i * 4 + 1];
-			float pz = foam[i * 4 + 2];
-			float life = foam[i * 4 + 3];
-			if (!Float.isFinite(px) || !Float.isFinite(py) || !Float.isFinite(pz) || life <= 0f) {
-				continue;
-			}
-			float density = densityAt(px, py, pz);
-			if (density < bandMin || density > bandMax) {
-				continue; // spray in the air or bubbles deep inside: not surface foam
-			}
-			float strength = Math.min(1f, life * FOAM_LIFE_FACTOR);
-			int x0 = (int) Math.ceil((px - r) * inv);
-			int x1 = (int) Math.floor((px + r) * inv);
-			int y0 = (int) Math.ceil((py - r) * inv);
-			int y1 = (int) Math.floor((py + r) * inv);
-			int z0 = (int) Math.ceil((pz - r) * inv);
-			int z1 = (int) Math.floor((pz + r) * inv);
-			for (int nz = z0; nz <= z1; nz++) {
-				for (int ny = y0; ny <= y1; ny++) {
-					for (int nx = x0; nx <= x1; nx++) {
-						float dx = nx * cellSize - px;
-						float dy = ny * cellSize - py;
-						float dz = nz * cellSize - pz;
-						float d2 = dx * dx + dy * dy + dz * dz;
-						if (d2 >= r2) {
-							continue;
-						}
-						long key = brickKey(nx >> BRICK_BITS, ny >> BRICK_BITS, nz >> BRICK_BITS);
-						if (key != lastKey) {
-							lastKey = key;
-							lastBrick = bricks.get(key);
-						}
-						float[] brick = lastBrick;
-						if (brick == null) {
-							continue;
-						}
-						float t = 1f - d2 / r2;
-						brick[localIndex(nx & BRICK_MASK, ny & BRICK_MASK, nz & BRICK_MASK) * CHANNELS + FOAM_CHANNEL] += t * t * strength;
-					}
-				}
-			}
-		}
 	}
 
 	// ------------------------------------------------------------------------------------------
@@ -460,10 +368,9 @@ public final class FluidSurfaceMesher {
 	}
 
 	/** Copies a brick plus its one-node border on the positive sides into the padded arrays. */
-	private void loadPadded(int bx, int by, int bz, float[] density, float[] velocity, float[] foam) {
+	private void loadPadded(int bx, int by, int bz, float[] density, float[] velocity) {
 		Arrays.fill(density, 0f);
 		Arrays.fill(velocity, 0f);
-		Arrays.fill(foam, 0f);
 		for (int dz = 0; dz <= 1; dz++) {
 			for (int dy = 0; dy <= 1; dy++) {
 				for (int dx = 0; dx <= 1; dx++) {
@@ -486,7 +393,6 @@ public final class FluidSurfaceMesher {
 								velocity[d * 3] = src[s + 1];
 								velocity[d * 3 + 1] = src[s + 2];
 								velocity[d * 3 + 2] = src[s + 3];
-								foam[d] = src[s + FOAM_CHANNEL];
 							}
 						}
 					}
@@ -611,8 +517,7 @@ public final class FluidSurfaceMesher {
 		int bz = brickZ(key);
 		float[] density = padDensity.get();
 		float[] velocity = padVelocity.get();
-		float[] foam = padFoam.get();
-		loadPadded(bx, by, bz, density, velocity, foam);
+		loadPadded(bx, by, bz, density, velocity);
 
 		boolean anyInside = false;
 		boolean anyOutside = false;
@@ -656,7 +561,7 @@ public final class FluidSurfaceMesher {
 						Arrays.fill(surface.localVertex, -1);
 					}
 					int local = localIndex(lx, ly, lz);
-					surface.localVertex[local] = addVertex(surface, baseX + lx, baseY + ly, baseZ + lz, corner, velocity, foam, p);
+					surface.localVertex[local] = addVertex(surface, baseX + lx, baseY + ly, baseZ + lz, corner, velocity, p);
 
 					boolean inside = (mask & 1) != 0;
 					int flags = inside ? INSIDE : 0;
@@ -681,7 +586,7 @@ public final class FluidSurfaceMesher {
 		return surface;
 	}
 
-	private int addVertex(BrickSurface surface, int x, int y, int z, float[] corner, float[] velocity, float[] foam, int p) {
+	private int addVertex(BrickSurface surface, int x, int y, int z, float[] corner, float[] velocity, int p) {
 		// Average of the edge crossings, in cell-local coordinates.
 		float sx = 0;
 		float sy = 0;
@@ -721,14 +626,12 @@ public final class FluidSurfaceMesher {
 
 		// Density-weighted flow velocity around the cell.
 		float densitySum = 0;
-		float foamSum = 0;
 		float vx = 0;
 		float vy = 0;
 		float vz = 0;
 		for (int c = 0; c < 8; c++) {
 			int i = p + CORNER_OFFSETS[c];
 			densitySum += corner[c];
-			foamSum += foam[i];
 			vx += velocity[i * 3];
 			vy += velocity[i * 3 + 1];
 			vz += velocity[i * 3 + 2];
@@ -756,7 +659,6 @@ public final class FluidSurfaceMesher {
 		v[o + 7] = vy;
 		v[o + 8] = vz;
 		v[o + 9] = thickness(v[o], v[o + 1], v[o + 2], nx, ny, nz);
-		v[o + 10] = foamSum * 0.125f * foamNormalization();
 		return index;
 	}
 
