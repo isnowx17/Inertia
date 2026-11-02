@@ -43,7 +43,7 @@ bucket are unchanged. The water is not saved: it disappears when you leave the w
 
 | Setting | Default | Meaning |
 |---|---|---|
-| `quality` | `high` | `low`, `medium`, `high`, `ultra` or `custom`; see below. |
+| `quality` | `ultra` | `low`, `medium`, `high`, `ultra` or `custom`; see below. Lower it for more FPS. |
 | `particleLimit` | 2097152 | Most water particles; the buffer grows up to this as you add water. |
 | `sourceRadius` | 0.3 | Radius of the stream from a flowing water source, in blocks. |
 | `sourceSpeed` | 4.0 | Speed of the water leaving a flowing water source, blocks per second. |
@@ -125,13 +125,13 @@ jars, creates the tag `v<version>` and publishes the release.
   depths), screen-space reflections of the surroundings, caustics on the ground below, Fresnel
   sky reflection and a sun glint. It is registered as an optional pipeline, so a
   compile failure only switches back to the simple rendering.
-- **Foam:** up to 150,000 small foam tracers (40,000 to 250,000 depending on `quality`) float
-  on the top surface. They are spawned where the water churns (fast flow, and where PhysX spawns
+- **Foam:** up to 250,000 small foam tracers at the default `ultra` quality (40,000 at `low`)
+  float on the top surface. They are spawned where the water churns (fast flow, and where PhysX spawns
   fresh diffuse particles at the surface), drift with the surface flow, are stirred by small eddies
   and pushed aside by boils (upwellings that sweep foam outwards, so it gathers into lines and
   rings), and fade after a few seconds. Stretched and folded by the flow they form swirling foam
-  lines and patches. Every surface rebuild splats them into a top-down foam map (about 4 cm per
-  texel, with mip levels) that the water shader samples; up close the foam breaks up into fine
+  lines and patches. Every surface rebuild splats them into a top-down foam map (about 3 cm per
+  texel at `ultra`, with mip levels) that the water shader samples; up close the foam breaks up into fine
   bubbles. Spray just above the water is drawn as small soft flecks.
 - **Threads:** the GPU step runs on a physics thread, the surface is meshed on a worker pool, and
   the game thread only collects results and draws.

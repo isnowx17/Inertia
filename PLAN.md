@@ -88,4 +88,5 @@ Kurallar:
 - **0.4.5 (yayınlandı):** Köpük kaldırıldı (shader deseni, hızlı suda beyazlaşma, yüzey köpüğü); sıçrama tanecikleri varsayılan olarak kapalı.
 - **0.5.0 (yayınlandı):** Yeni köpük: Skaffy'nin Realistic Water modundan (izinle) uyarlandı; köpük miktarı → kaplama eğrisi ve kabarcık ağı (foam lace).
 - **0.6.0 (yayınlandı):** Tamamen yeni köpük: yüzeyde akıntıyla sürüklenen, girdaplar ve kaynamalarla (boil) çizgi ve halkalara toplanan köpük taneleri; ince köpük haritası (≈4 cm), yakından kabarcık dokusu.
+- **0.6.1 (yayınlandı):** Varsayılan kalite `ultra` (eski varsayılan `high` olan ayar dosyaları da `ultra`'ya geçer).
 - **Aday:** Suda yüzen cisimler (tekne, eşya) — v1 planında "olmayacaklar" listesindeydi, kullanıcı onayıyla ele alınacak.

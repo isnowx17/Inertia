@@ -21,7 +21,7 @@ public final class InertiaConfig {
 	public static final String RENDER_SURFACE = "surface";
 	public static final String RENDER_PARTICLES = "particles";
 	public static final String QUALITY_CUSTOM = "custom";
-	private static final int CURRENT_VERSION = 8;
+	private static final int CURRENT_VERSION = 9;
 
 	/** Version of this file's defaults; older files get changed defaults migrated on load. */
 	public int configVersion = 0;
@@ -29,10 +29,10 @@ public final class InertiaConfig {
 	/**
 	 * Simulation and surface detail: {@code "low"}, {@code "medium"}, {@code "high"}, {@code "ultra"}
 	 * or {@code "custom"}. Higher qualities use more, smaller particles (a bucket is always one block
-	 * of water) and a finer surface; they need a stronger GPU and CPU. With {@code "custom"} the
-	 * values below marked "custom" are used.
+	 * of water) and a finer surface; they need a stronger GPU and CPU. The default is the highest,
+	 * {@code "ultra"}. With {@code "custom"} the values below marked "custom" are used.
 	 */
-	public String quality = "high";
+	public String quality = "ultra";
 
 	/** Custom: distance between neighbouring particles in blocks (0.1 = 1000 particles per block). */
 	public float particleSpacing = 0.1f;
@@ -160,10 +160,10 @@ public final class InertiaConfig {
 	public Quality effectiveQuality() {
 		return switch (quality) {
 			case "low" -> LOW;
-			case "ultra" -> ULTRA;
 			case "medium" -> MEDIUM;
+			case "high" -> HIGH;
 			case QUALITY_CUSTOM -> new Quality(particleSpacing, maxParticles, surfaceCellSize, substepsPerTick);
-			default -> HIGH;
+			default -> ULTRA;
 		};
 	}
 
@@ -238,14 +238,18 @@ public final class InertiaConfig {
 				foamCoverage = 1.0f;
 			}
 		}
+		if (configVersion < 9 && "high".equals(quality)) {
+			// 0.6.1: the default quality became "ultra"; files that still had the old default follow it.
+			quality = "ultra";
+		}
 		configVersion = CURRENT_VERSION;
 	}
 
 	private void clamp() {
-		quality = quality == null ? "high" : quality.toLowerCase(Locale.ROOT);
+		quality = quality == null ? "ultra" : quality.toLowerCase(Locale.ROOT);
 		if (!quality.equals("low") && !quality.equals("medium") && !quality.equals("high")
 			&& !quality.equals("ultra") && !quality.equals(QUALITY_CUSTOM)) {
-			quality = "high";
+			quality = "ultra";
 		}
 		particleSpacing = clamp(orDefault(particleSpacing, 0.1f), 0.05f, 0.25f);
 		maxParticles = clamp(maxParticles, 4_096, 2_097_152);
