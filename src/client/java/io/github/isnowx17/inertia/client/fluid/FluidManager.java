@@ -93,7 +93,7 @@ public final class FluidManager {
 			double reach = Math.max(0, config.despawnDistance - 2);
 			for (int i = 0; i < cells.length; i++) {
 				Source source = sources.get(i);
-				if (source.cell().getCenter().distanceToSqr(client.player.position()) < reach * reach) {
+				if (Vec3.atCenterOf(source.cell()).distanceToSqr(client.player.position()) < reach * reach) {
 					simulation.fillSource(source.cell(), config.sourceFlow);
 				}
 				cells[i] = source.cell().asLong();
