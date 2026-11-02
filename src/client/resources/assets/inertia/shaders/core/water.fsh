@@ -242,7 +242,7 @@ void main() {
         reflectionColor = mix(skyColor, hit.rgb, hit.a);
     }
     float sunDot = max(dot(reflected, sunDirection), 0.0);
-    float sun = pow(sunDot, 500.0) * 9.0 + pow(sunDot, 60.0) * 0.6 + pow(sunDot, 8.0) * 0.08;
+    float sun = pow(sunDot, 500.0) * 6.0 + pow(sunDot, 60.0) * 0.3;
     vec3 sunColor = vec3(1.0, 0.95, 0.85) * sun * daylight * TextureMat[3][2] * lightMapColor.g;
 
     vec3 color = mix(body, reflectionColor, fresnel) + sunColor;
