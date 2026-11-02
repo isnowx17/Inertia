@@ -90,4 +90,5 @@ Kurallar:
 - **0.6.0 (yayınlandı):** Tamamen yeni köpük: yüzeyde akıntıyla sürüklenen, girdaplar ve kaynamalarla (boil) çizgi ve halkalara toplanan köpük taneleri; ince köpük haritası (≈4 cm), yakından kabarcık dokusu.
 - **0.6.1 (yayınlandı):** Varsayılan kalite `ultra` (eski varsayılan `high` olan ayar dosyaları da `ultra`'ya geçer).
 - **1.0.0 (yayınlandı):** Büyük performans güncellemesi: yüzey oluşturma 3-7 kat hızlı (8 düğüme dağıtım + ayrılabilir bulanıklaştırma, derin blokları atlama), su yüzeyi GPU'da kalıcı (kare başına CPU işi yok, köşe shader'ında akışla kaydırma), dışarıdan bakınca iç yüzler çizilmiyor, fizik thread'inde toplu okuma ve tarama, kopyasız dizi paylaşımı.
+- **1.1.0 (yayınlandı):** Akan su kovası Minecraft su kovası gibi: kaynak tıklanan yüzün önündeki bloğa konur, o bloğu sürekli suyla dolu tutar, su aşağı (yer yoksa yanlara) akar; kaynağın bloğuna blok koyunca durur.
 - **Aday:** Suda yüzen cisimler (tekne, eşya) — v1 planında "olmayacaklar" listesindeydi, kullanıcı onayıyla ele alınacak.

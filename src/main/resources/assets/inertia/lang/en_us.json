@@ -15,5 +15,6 @@
   "message.inertia.source_added": "Inertia: water source on (%s active)",
   "message.inertia.source_removed": "Inertia: water source off (%s active)",
   "message.inertia.sources_cleared": "Inertia: all water sources off",
-  "message.inertia.source_limit": "Inertia: at most %s water sources"
+  "message.inertia.source_limit": "Inertia: at most %s water sources",
+  "message.inertia.source_blocked": "Inertia: a block is in the way"
 }

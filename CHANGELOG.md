@@ -3,6 +3,21 @@
 All notable changes to Inertia are documented here. Versioning rules are described in
 [PLAN.md](PLAN.md#5-sürümleme).
 
+## [1.1.0]
+
+### Changed
+- The **PhysX Flowing Water Bucket** now works like a water bucket placing a water source block.
+  The source goes into the block in front of the clicked face (or into a replaceable block like
+  tall grass) and keeps that whole block full of water: water flows out of it, down when there is
+  room below, otherwise out along the ground. It no longer shoots a jet out of the clicked face.
+- Placing a block into a source stops it, like filling in a water source block. Clicking the same
+  place again also stops it; sneak + click stops all sources. A source cannot be placed into a
+  solid block.
+- New setting `sourceFlow` (blocks of water per second, default 3) limits how fast a source
+  refills; `sourceRadius` and `sourceSpeed` are gone.
+- Sources further away than the despawn distance pause instead of making water that would be
+  removed right away.
+
 ## [1.0.0]
 
 A big performance update: the same water, much less CPU time, and almost no work per frame.

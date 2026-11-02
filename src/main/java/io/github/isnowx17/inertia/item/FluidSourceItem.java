@@ -1,5 +1,6 @@
 package io.github.isnowx17.inertia.item;
 
+import net.minecraft.core.BlockPos;
 import net.minecraft.world.InteractionHand;
 import net.minecraft.world.InteractionResult;
 import net.minecraft.world.entity.player.Player;
@@ -8,30 +9,26 @@ import net.minecraft.world.level.ClipContext;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.phys.BlockHitResult;
 import net.minecraft.world.phys.HitResult;
-import net.minecraft.world.phys.Vec3;
 
 /**
- * Places a continuously flowing water source where the player is looking.
+ * Places a flowing water source, like a water bucket places a water source block.
  *
- * <p>Right-clicking a block face starts a stream that shoots out of that face (from a wall it pours
- * sideways, from the ground it rises like a fountain, from a ceiling it falls). Right-clicking near
- * an existing source stops it; sneaking and right-clicking stops all sources. Like the PhysX water
- * bucket, the sources live in the client-side GPU simulation and are not saved.
+ * <p>Right-clicking a block face places the source in the block in front of that face (or in the
+ * clicked block itself when it can be replaced, like tall grass). The source keeps its block full
+ * of water, which flows out of it: down when there is room below, otherwise outwards along the
+ * ground. Placing a block into the source stops it, and so does right-clicking the same place
+ * again; sneaking and right-clicking stops all sources. Like the PhysX water bucket, the sources
+ * live in the client-side GPU simulation and are not saved.
  */
 public class FluidSourceItem extends Item {
-	private static final double AIR_PLACE_DISTANCE = 2.5;
-	/** Sources start this far in front of the clicked face. */
-	private static final double FACE_OFFSET = 0.3;
-
 	@FunctionalInterface
 	public interface ClientHandler {
 		/**
-		 * @param position  world position of the source
-		 * @param direction direction the water flows out (unit vector)
-		 * @param stopAll   whether the player asked to stop every source
+		 * @param cell    block the source is placed in or removed from, or {@code null} with stopAll
+		 * @param stopAll whether the player asked to stop every source
 		 * @return whether something changed
 		 */
-		boolean toggle(Player player, Vec3 position, Vec3 direction, boolean stopAll);
+		boolean toggle(Player player, BlockPos cell, boolean stopAll);
 	}
 
 	private static volatile ClientHandler clientHandler;
@@ -53,20 +50,16 @@ public class FluidSourceItem extends Item {
 		if (handler == null) {
 			return InteractionResult.FAIL;
 		}
-
-		Vec3 position;
-		Vec3 direction;
-		BlockHitResult hit = getPlayerPOVHitResult(level, player, ClipContext.Fluid.NONE);
-		if (hit.getType() == HitResult.Type.BLOCK) {
-			Vec3 normal = hit.getDirection().getUnitVec3();
-			position = Vec3.atCenterOf(hit.getBlockPos()).add(normal.scale(0.5 + FACE_OFFSET));
-			direction = normal;
-		} else {
-			position = player.getEyePosition().add(player.getLookAngle().scale(AIR_PLACE_DISTANCE));
-			direction = player.getLookAngle().normalize();
+		if (player.isShiftKeyDown()) {
+			return handler.toggle(player, null, true) ? InteractionResult.SUCCESS : InteractionResult.FAIL;
 		}
 
-		boolean changed = handler.toggle(player, position, direction, player.isShiftKeyDown());
-		return changed ? InteractionResult.SUCCESS : InteractionResult.FAIL;
+		BlockHitResult hit = getPlayerPOVHitResult(level, player, ClipContext.Fluid.NONE);
+		if (hit.getType() != HitResult.Type.BLOCK) {
+			return InteractionResult.PASS;
+		}
+		BlockPos clicked = hit.getBlockPos();
+		BlockPos cell = level.getBlockState(clicked).canBeReplaced() ? clicked : clicked.relative(hit.getDirection());
+		return handler.toggle(player, cell, false) ? InteractionResult.SUCCESS : InteractionResult.FAIL;
 	}
 }

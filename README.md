@@ -28,9 +28,10 @@ background).
 - Take the **PhysX Water Bucket** from the *Tools & Utilities* creative tab.
 - **Right-click** releases one block of water where you are looking. Hold right-click to keep
   pouring. The bucket never runs empty.
-- The **PhysX Flowing Water Bucket** starts a continuous stream out of the block face you click
-  (a fountain on the ground, a faucet on a wall, a waterfall from a ceiling). Click near a source
-  to stop it; sneak + click stops all sources.
+- The **PhysX Flowing Water Bucket** works like a water bucket placing a water source block: the
+  source goes into the block in front of the face you click and keeps that block full of water,
+  which flows out of it, down when there is room below, otherwise out along the ground. Put a block
+  into the source (or click the same place again) to stop it; sneak + click stops all sources.
 - `/inertia info` shows the GPU and simulation status, `/inertia clear` removes all water and
   stops all sources.
 
@@ -45,8 +46,7 @@ bucket are unchanged. The water is not saved: it disappears when you leave the w
 |---|---|---|
 | `quality` | `ultra` | `low`, `medium`, `high`, `ultra` or `custom`; see below. Lower it for more FPS. |
 | `particleLimit` | 2097152 | Most water particles; the buffer grows up to this as you add water. |
-| `sourceRadius` | 0.3 | Radius of the stream from a flowing water source, in blocks. |
-| `sourceSpeed` | 4.0 | Speed of the water leaving a flowing water source, blocks per second. |
+| `sourceFlow` | 3.0 | Most water a flowing source adds, in blocks of water per second (it keeps its block full). |
 | `despawnDistance` | 96 | Water further away from you than this is removed. |
 | `playerInteraction` | true | Whether water pushes, slows and lifts the player. |
 | `waterShader` | true | Draw the water with Inertia's shader (refraction, depth colour, ripples, sun glints). Falls back automatically if unsupported. |
