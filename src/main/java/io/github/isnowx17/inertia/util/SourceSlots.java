@@ -2,8 +2,8 @@ package io.github.isnowx17.inertia.util;
 
 /**
  * The places for particles in the block of a flowing water source: a lattice of
- * {@code perAxis³} slots, one particle each, numbered bottom layer first so that filling the free
- * slots in order replaces water where it leaves the block. Taken slots are kept in a bit set.
+ * {@code perAxis³} slots, one particle each, numbered layer by layer from the bottom (so going
+ * through them backwards fills the top layer first). Taken slots are kept in a bit set.
  */
 public final class SourceSlots {
 	private SourceSlots() {

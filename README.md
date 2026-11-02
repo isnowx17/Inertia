@@ -46,7 +46,7 @@ bucket are unchanged. The water is not saved: it disappears when you leave the w
 |---|---|---|
 | `quality` | `ultra` | `low`, `medium`, `high`, `ultra` or `custom`; see below. Lower it for more FPS. |
 | `particleLimit` | 2097152 | Most water particles; the buffer grows up to this as you add water. |
-| `sourceFlow` | 3.0 | Most water a flowing source adds, in blocks of water per second (it keeps its block full). |
+| `sourceFlow` | 3.0 | Water a flowing source lets out, in blocks of water per second (also its outflow speed). |
 | `despawnDistance` | 96 | Water further away from you than this is removed. |
 | `playerInteraction` | true | Whether water pushes, slows and lifts the player. |
 | `waterShader` | true | Draw the water with Inertia's shader (refraction, depth colour, ripples, sun glints). Falls back automatically if unsupported. |

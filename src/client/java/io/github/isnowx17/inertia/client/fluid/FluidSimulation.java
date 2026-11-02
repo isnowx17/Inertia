@@ -73,10 +73,10 @@ public final class FluidSimulation implements AutoCloseable {
 	private static final int BELOW_WORLD_MARGIN = 16;
 	/** Particles sampled per tick to find where collision geometry is needed. */
 	private static final int TERRAIN_SAMPLES = 131_072;
-	/** Speed (blocks/second, downwards) of water appearing in an empty source block. */
-	private static final float SOURCE_START_SPEED = 1f;
-	/** Particles a source block needs before its flow is used for new water. */
-	private static final int SOURCE_FLOW_SAMPLES = 8;
+	/** Slowest speed (blocks/second, downwards) water leaves a source block with. */
+	private static final float SOURCE_MIN_SPEED = 1f;
+	/** A source block this full holds back water that cannot get away; new water then comes gently. */
+	private static final float SOURCE_POOLING_FILL = 0.6f;
 	/** Floats per particle in the position and velocity arrays. */
 	public static final int STRIDE = 4;
 
@@ -468,10 +468,13 @@ public final class FluidSimulation implements AutoCloseable {
 	}
 
 	/**
-	 * Keeps the block of a flowing water source full, like a water source block: particles are
-	 * added to the free places of the block (the lowest first), at most {@code blocksPerSecond}
-	 * blocks of water per second. Water that leaves the block (falling down, spreading out) is
-	 * replaced; a full block gets nothing. Called every tick for every source.
+	 * Lets a steady flow of water out of the block of a flowing water source: every tick the same
+	 * amount of water ({@code blocksPerSecond}) appears in the free places of the block, the top
+	 * layer first, moving down at {@code blocksPerSecond} blocks per second. Falling freely, each
+	 * tick's layer joins the one before into one continuous column through the block. When the
+	 * water cannot get away (a pool below), the block fills up and the new water comes gently, so
+	 * the water spreads out like from a water source block. A full block gets nothing. Called every
+	 * tick for every source.
 	 *
 	 * <p>Which places are free comes from the latest physics step, which measures the blocks of the
 	 * sources set with {@link #setSources}. A new source therefore starts one tick later, unless there
@@ -488,13 +491,16 @@ public final class FluidSimulation implements AutoCloseable {
 		int slots = perAxis * perAxis * perAxis;
 		SourceCell measured = sourceCells.get(cell.asLong());
 		long[] taken;
+		// A steady stream: the water leaves the block as fast as it is added, so it never piles up
+		// into a block of water that would then fall as one lump.
+		float flowSpeed = Math.max(SOURCE_MIN_SPEED, blocksPerSecond);
 		float vx = 0f;
-		float vy = -SOURCE_START_SPEED;
+		float vy = -flowSpeed;
 		float vz = 0f;
 		if (measured != null && measured.slots.length >= SourceSlots.words(perAxis)) {
 			taken = measured.slots;
-			if (measured.count >= SOURCE_FLOW_SAMPLES) {
-				// New water moves on with the water already in the block, so a falling column stays whole.
+			if (measured.count >= slots * SOURCE_POOLING_FILL) {
+				// The water cannot get away (a pool below): add it gently, moving with the water there.
 				vx = measured.sumX / measured.count;
 				vy = Math.min(measured.sumY / measured.count, 0f);
 				vz = measured.sumZ / measured.count;
@@ -520,8 +526,8 @@ public final class FluidSimulation implements AutoCloseable {
 		ThreadLocalRandom random = ThreadLocalRandom.current();
 		int start = activeCount;
 		int written = 0;
-		// Slots run bottom layer first: water is replaced where it leaves the block.
-		for (int slot = 0; slot < slots && written < budget; slot++) {
+		// Top layer first: each tick's water follows right behind the water of the tick before.
+		for (int slot = slots - 1; slot >= 0 && written < budget; slot--) {
 			if (SourceSlots.isTaken(taken, slot)) {
 				continue;
 			}
