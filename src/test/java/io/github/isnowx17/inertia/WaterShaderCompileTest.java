@@ -42,6 +42,29 @@ class WaterShaderCompileTest {
 		}
 	}
 
+	/** The vertex shader reads the surface vertices in exactly the layout the renderer writes. */
+	@Test
+	void vertexInputsMatchTheWaterVertexLayout() throws IOException {
+		String source = Files.readString(SHADERS.resolve("water.vsh"));
+		java.util.regex.Matcher matcher = java.util.regex.Pattern
+			.compile("layout\\(location\\s*=\\s*(\\d+)\\)\\s*in\\s+(\\w+)\\s+(\\w+)\\s*;")
+			.matcher(source);
+		List<String> inputs = new ArrayList<>();
+		while (matcher.find()) {
+			inputs.add(matcher.group(1) + " " + matcher.group(2) + " " + matcher.group(3));
+		}
+		List<String> expected = new ArrayList<>();
+		var attributes = io.github.isnowx17.inertia.util.WaterVertexLayout.ATTRIBUTES;
+		int offset = 0;
+		for (int i = 0; i < attributes.size(); i++) {
+			var attribute = attributes.get(i);
+			expected.add(i + " " + attribute.glslType() + " " + attribute.name());
+			offset += attribute.bytes();
+		}
+		assertEquals(expected, inputs);
+		assertEquals(io.github.isnowx17.inertia.util.WaterVertexLayout.STRIDE, offset);
+	}
+
 	private static ByteBuffer compile(String file, int kind, boolean zeroToOne) throws IOException {
 		String source = Files.readString(SHADERS.resolve(file));
 		long compiler = Shaderc.shaderc_compiler_initialize();

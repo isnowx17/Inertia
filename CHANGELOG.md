@@ -3,6 +3,32 @@
 All notable changes to Inertia are documented here. Versioning rules are described in
 [PLAN.md](PLAN.md#5-sürümleme).
 
+## [1.0.0]
+
+A big performance update: the same water, much less CPU time, and almost no work per frame.
+
+### Performance
+- **Surface building 3 to 7 times faster** (measured, 3 worker threads, `ultra`): 262,144 particles
+  72 → about 20 ms, 2,097,152 particles 639 → about 90 ms. Every particle is now spread over the
+  eight surrounding grid nodes (instead of about 33) and the density is smoothed with a small
+  separable blur. Grid bricks deep inside a body of water are not splatted at all, bricks the
+  surface cannot cross are skipped, and grid memory and particle bins are reused between updates.
+- **No per-frame CPU work for the water surface:** the surface stays on the GPU. Each new surface
+  is uploaded once, with every vertex shared by its quads (about a quarter of the data), and the
+  vertex shader moves it along the flow every frame. Before, every vertex was recomputed, rebuilt
+  and uploaded every frame.
+- Light for the surface is looked up once per surface and cached, instead of every frame.
+- **Half the shading work** when the camera is outside the water: the inner sides of the surface
+  (a pool's floor seen through its top) are no longer shaded.
+- The surface is rebuilt once per simulation step (20 per second) from the newest data, without
+  copying the particle arrays (they are lent to the surface job).
+- Physics thread: positions and velocities are copied back with one bulk copy each; lost
+  particles, the water around the player and the blocks needing collision geometry are found on
+  the physics thread instead of the game thread. After removing lost particles only the changed
+  part of the particle buffer is uploaded again (it used to be all of it).
+- Finding the isolated spray droplets reuses the surface's particle bins and skips dense bricks.
+- The fine bubble detail of the foam is only computed up close.
+
 ## [0.6.1] — Beta
 
 ### Changed
