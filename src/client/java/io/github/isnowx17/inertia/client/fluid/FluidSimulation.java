@@ -3,6 +3,7 @@ package io.github.isnowx17.inertia.client.fluid;
 import io.github.isnowx17.inertia.client.config.InertiaConfig;
 import io.github.isnowx17.inertia.client.physics.PhysXRuntime;
 import io.github.isnowx17.inertia.util.FluidParameters;
+import io.github.isnowx17.inertia.util.SourceSlots;
 import it.unimi.dsi.fastutil.ints.IntArrayList;
 import it.unimi.dsi.fastutil.longs.LongIterator;
 import it.unimi.dsi.fastutil.longs.LongOpenHashSet;
@@ -72,6 +73,10 @@ public final class FluidSimulation implements AutoCloseable {
 	private static final int BELOW_WORLD_MARGIN = 16;
 	/** Particles sampled per tick to find where collision geometry is needed. */
 	private static final int TERRAIN_SAMPLES = 131_072;
+	/** Speed (blocks/second, downwards) of water appearing in an empty source block. */
+	private static final float SOURCE_START_SPEED = 1f;
+	/** Particles a source block needs before its flow is used for new water. */
+	private static final int SOURCE_FLOW_SAMPLES = 8;
 	/** Floats per particle in the position and velocity arrays. */
 	public static final int STRIDE = 4;
 
@@ -141,6 +146,12 @@ public final class FluidSimulation implements AutoCloseable {
 	private float shellMaxZ;
 	private int terrainStride;
 	private int terrainOffset;
+
+	// Flowing sources: the blocks to measure (set by the manager), the cells handed to the running
+	// step (relative to the origin) and the measurements of the latest finished step.
+	private long[] requestedSources = new long[0];
+	private SourceCell[] stepSources = new SourceCell[0];
+	private final it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap<SourceCell> sourceCells = new it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap<>();
 
 	/** Arrays background jobs are reading; they are not handed back to the physics thread. */
 	private final Set<float[]> leased = Collections.newSetFromMap(new IdentityHashMap<>());
@@ -457,80 +468,83 @@ public final class FluidSimulation implements AutoCloseable {
 	}
 
 	/**
-	 * Emits one tick worth of a continuous stream: discs of particles of the given radius, moving
-	 * along {@code direction} at {@code speed} blocks per second. Called every tick by a water source.
+	 * Keeps the block of a flowing water source full, like a water source block: particles are
+	 * added to the free places of the block (the lowest first), at most {@code blocksPerSecond}
+	 * blocks of water per second. Water that leaves the block (falling down, spreading out) is
+	 * replaced; a full block gets nothing. Called every tick for every source.
+	 *
+	 * <p>Which places are free comes from the latest physics step, which measures the blocks of the
+	 * sources set with {@link #setSources}. A new source therefore starts one tick later, unless there
+	 * is no water at all yet.
 	 *
 	 * @return number of particles added
 	 */
-	public int spawnStream(Vec3 center, Vec3 direction, float radius, float speed) {
+	public int fillSource(BlockPos cell, float blocksPerSecond) {
 		awaitStep();
 		if (activeCount == 0 || !originSet) {
-			rebase(BlockPos.containing(center));
+			rebase(cell);
 		}
-		float spacing = params.spacing();
-
-		// Orthonormal basis around the stream direction.
-		org.joml.Vector3f d = new org.joml.Vector3f((float) direction.x, (float) direction.y, (float) direction.z);
-		if (d.lengthSquared() < 1e-6f) {
-			d.set(0f, -1f, 0f);
-		}
-		d.normalize();
-		org.joml.Vector3f helper = Math.abs(d.y) < 0.9f ? new org.joml.Vector3f(0f, 1f, 0f) : new org.joml.Vector3f(1f, 0f, 0f);
-		org.joml.Vector3f u = new org.joml.Vector3f(d).cross(helper).normalize();
-		org.joml.Vector3f v = new org.joml.Vector3f(d).cross(u).normalize();
-
-		// Disc points on a grid with the particle spacing; enough layers per tick to fill the stream.
-		int steps = Math.max(1, (int) Math.ceil(radius / spacing));
-		it.unimi.dsi.fastutil.floats.FloatArrayList disc = new it.unimi.dsi.fastutil.floats.FloatArrayList();
-		for (int a = -steps; a <= steps; a++) {
-			for (int b = -steps; b <= steps; b++) {
-				float da = a * spacing;
-				float db = b * spacing;
-				if (da * da + db * db <= radius * radius) {
-					disc.add(da);
-					disc.add(db);
-				}
+		int perAxis = params.particlesPerAxis();
+		int slots = perAxis * perAxis * perAxis;
+		SourceCell measured = sourceCells.get(cell.asLong());
+		long[] taken;
+		float vx = 0f;
+		float vy = -SOURCE_START_SPEED;
+		float vz = 0f;
+		if (measured != null && measured.slots.length >= SourceSlots.words(perAxis)) {
+			taken = measured.slots;
+			if (measured.count >= SOURCE_FLOW_SAMPLES) {
+				// New water moves on with the water already in the block, so a falling column stays whole.
+				vx = measured.sumX / measured.count;
+				vy = Math.min(measured.sumY / measured.count, 0f);
+				vz = measured.sumZ / measured.count;
 			}
+		} else if (activeCount == 0) {
+			taken = new long[SourceSlots.words(perAxis)];
+		} else {
+			return 0; // not measured yet: never put particles into water that may already be there
 		}
-		int points = disc.size() / 2;
-		int layers = Math.max(1, Math.round(speed * TICK_SECONDS / spacing));
-		int wanted = points * layers;
-		int count = Math.min(wanted, ensureRoom(wanted));
-		if (count <= 0) {
+
+		int wanted = Math.max(1, Math.round(blocksPerSecond * params.particlesPerBlock() * TICK_SECONDS));
+		int budget = Math.min(wanted, ensureRoom(wanted));
+		if (budget <= 0) {
 			return 0;
 		}
 
-		float invMass = 1f / params.particleMass();
+		float spacing = 1f / perAxis;
 		float jitter = spacing * 0.05f;
-		float cx = (float) (center.x - originX);
-		float cy = (float) (center.y - originY);
-		float cz = (float) (center.z - originZ);
+		float baseX = cell.getX() - originX + spacing * 0.5f;
+		float baseY = cell.getY() - originY + spacing * 0.5f;
+		float baseZ = cell.getZ() - originZ + spacing * 0.5f;
+		float invMass = 1f / params.particleMass();
 		ThreadLocalRandom random = ThreadLocalRandom.current();
 		int start = activeCount;
 		int written = 0;
-		outer:
-		for (int k = 0; k < layers; k++) {
-			for (int n = 0; n < points; n++) {
-				if (written >= count) {
-					break outer;
-				}
-				float a = disc.getFloat(n * 2);
-				float b = disc.getFloat(n * 2 + 1);
-				float along = k * spacing;
-				float px = cx + u.x * a + v.x * b + d.x * along + (random.nextFloat() - 0.5f) * jitter;
-				float py = cy + u.y * a + v.y * b + d.y * along + (random.nextFloat() - 0.5f) * jitter;
-				float pz = cz + u.z * a + v.z * b + d.z * along + (random.nextFloat() - 0.5f) * jitter;
-				int i = start + written;
-				hostPos.put(i * 4, px).put(i * 4 + 1, py).put(i * 4 + 2, pz).put(i * 4 + 3, invMass);
-				hostVel.put(i * 4, d.x * speed).put(i * 4 + 1, d.y * speed).put(i * 4 + 2, d.z * speed).put(i * 4 + 3, 0f);
-				currPos[i * STRIDE] = px;
-				currPos[i * STRIDE + 1] = py;
-				currPos[i * STRIDE + 2] = pz;
-				velocity[i * STRIDE] = d.x * speed;
-				velocity[i * STRIDE + 1] = d.y * speed;
-				velocity[i * STRIDE + 2] = d.z * speed;
-				written++;
+		// Slots run bottom layer first: water is replaced where it leaves the block.
+		for (int slot = 0; slot < slots && written < budget; slot++) {
+			if (SourceSlots.isTaken(taken, slot)) {
+				continue;
 			}
+			int ix = SourceSlots.x(slot, perAxis);
+			int iy = SourceSlots.y(slot, perAxis);
+			int iz = SourceSlots.z(slot, perAxis);
+			int i = start + written;
+			float px = baseX + ix * spacing + (random.nextFloat() - 0.5f) * jitter;
+			float py = baseY + iy * spacing + (random.nextFloat() - 0.5f) * jitter;
+			float pz = baseZ + iz * spacing + (random.nextFloat() - 0.5f) * jitter;
+			hostPos.put(i * 4, px).put(i * 4 + 1, py).put(i * 4 + 2, pz).put(i * 4 + 3, invMass);
+			hostVel.put(i * 4, vx).put(i * 4 + 1, vy).put(i * 4 + 2, vz).put(i * 4 + 3, 0f);
+			currPos[i * STRIDE] = px;
+			currPos[i * STRIDE + 1] = py;
+			currPos[i * STRIDE + 2] = pz;
+			velocity[i * STRIDE] = vx;
+			velocity[i * STRIDE + 1] = vy;
+			velocity[i * STRIDE + 2] = vz;
+			SourceSlots.mark(taken, slot);
+			written++;
+		}
+		if (written == 0) {
+			return 0;
 		}
 
 		uploadRange(start, written, true);
@@ -538,9 +552,9 @@ public final class FluidSimulation implements AutoCloseable {
 		buffer.setNbActiveParticles(activeCount);
 		version++;
 
-		int sx = Mth.floor(center.x) >> 4;
-		int sy = Mth.floor(center.y) >> 4;
-		int sz = Mth.floor(center.z) >> 4;
+		int sx = cell.getX() >> 4;
+		int sy = cell.getY() >> 4;
+		int sz = cell.getZ() >> 4;
 		for (int dx = -1; dx <= 1; dx++) {
 			for (int dy = -1; dy <= 1; dy++) {
 				for (int dz = -1; dz <= 1; dz++) {
@@ -549,6 +563,36 @@ public final class FluidSimulation implements AutoCloseable {
 			}
 		}
 		return written;
+	}
+
+	/**
+	 * The blocks of the flowing water sources (as {@link BlockPos#asLong}); the next physics step
+	 * measures which places in them are taken. Client thread, before {@link #tick}.
+	 */
+	public void setSources(long[] cells) {
+		requestedSources = cells.clone();
+	}
+
+	/** What a physics step found in the block of a flowing source. */
+	private static final class SourceCell {
+		final long key;
+		final int x;
+		final int y;
+		final int z;
+		/** One bit per particle place (bottom layer first) that holds a particle. */
+		final long[] slots;
+		int count;
+		float sumX;
+		float sumY;
+		float sumZ;
+
+		SourceCell(long key, int x, int y, int z, int slotCount) {
+			this.key = key;
+			this.x = x;
+			this.y = y;
+			this.z = z;
+			this.slots = new long[(slotCount + 63) / 64];
+		}
 	}
 
 	private void rebase(BlockPos around) {
@@ -635,6 +679,14 @@ public final class FluidSimulation implements AutoCloseable {
 		shellMaxZ = (float) (box.maxZ + margin - originZ);
 		terrainStride = Math.max(1, activeCount / TERRAIN_SAMPLES);
 		terrainOffset = (int) (tick % terrainStride);
+		int perAxis = params.particlesPerAxis();
+		SourceCell[] cells = new SourceCell[requestedSources.length];
+		for (int k = 0; k < cells.length; k++) {
+			long key = requestedSources[k];
+			cells[k] = new SourceCell(key, BlockPos.getX(key) - originX, BlockPos.getY(key) - originY, BlockPos.getZ(key) - originZ,
+				perAxis * perAxis * perAxis);
+		}
+		stepSources = cells;
 		stepParticleCount = activeCount;
 		stepHidesFoam = tick < foamHiddenUntilTick;
 		pendingStep = stepper.submit(this::step);
@@ -697,6 +749,23 @@ public final class FluidSimulation implements AutoCloseable {
 		nextLost.clear();
 		LongOpenHashSet blocks = nextOccupiedBlocks;
 		blocks.clear();
+		// Source blocks: a quick bounding box first, then the blocks themselves.
+		SourceCell[] sources = stepSources;
+		int perAxis = params.particlesPerAxis();
+		float boxX0 = Float.POSITIVE_INFINITY;
+		float boxY0 = Float.POSITIVE_INFINITY;
+		float boxZ0 = Float.POSITIVE_INFINITY;
+		float boxX1 = Float.NEGATIVE_INFINITY;
+		float boxY1 = Float.NEGATIVE_INFINITY;
+		float boxZ1 = Float.NEGATIVE_INFINITY;
+		for (SourceCell cell : sources) {
+			boxX0 = Math.min(boxX0, cell.x);
+			boxY0 = Math.min(boxY0, cell.y);
+			boxZ0 = Math.min(boxZ0, cell.z);
+			boxX1 = Math.max(boxX1, cell.x + 1);
+			boxY1 = Math.max(boxY1, cell.y + 1);
+			boxZ1 = Math.max(boxZ1, cell.z + 1);
+		}
 		int inside = 0;
 		double sumX = 0;
 		double sumY = 0;
@@ -725,6 +794,9 @@ public final class FluidSimulation implements AutoCloseable {
 				sumY += vel[o + 1];
 				sumZ += vel[o + 2];
 			}
+			if (x >= boxX0 && x < boxX1 && y >= boxY0 && y < boxY1 && z >= boxZ0 && z < boxZ1) {
+				measureSource(sources, perAxis, x, y, z, vel[o], vel[o + 1], vel[o + 2]);
+			}
 			if (sampled) {
 				long block = BlockPos.asLong(Mth.floor(x) + originX, Mth.floor(y) + originY, Mth.floor(z) + originZ);
 				if (block != lastBlock) {
@@ -737,6 +809,22 @@ public final class FluidSimulation implements AutoCloseable {
 		nextPlayerSumX = sumX;
 		nextPlayerSumY = sumY;
 		nextPlayerSumZ = sumZ;
+	}
+
+	/** Physics thread: notes a particle in the source block it lies in, if any. */
+	private static void measureSource(SourceCell[] sources, int perAxis, float x, float y, float z, float vx, float vy, float vz) {
+		for (SourceCell cell : sources) {
+			int slot = SourceSlots.slot(x - cell.x, y - cell.y, z - cell.z, perAxis);
+			if (slot < 0) {
+				continue;
+			}
+			SourceSlots.mark(cell.slots, slot);
+			cell.count++;
+			cell.sumX += vx;
+			cell.sumY += vy;
+			cell.sumZ += vz;
+			return;
+		}
 	}
 
 	/**
@@ -776,6 +864,10 @@ public final class FluidSimulation implements AutoCloseable {
 		playerWaterSumX = nextPlayerSumX;
 		playerWaterSumY = nextPlayerSumY;
 		playerWaterSumZ = nextPlayerSumZ;
+		sourceCells.clear();
+		for (SourceCell cell : stepSources) {
+			sourceCells.put(cell.key, cell);
+		}
 		version++;
 
 		removeLostParticles();

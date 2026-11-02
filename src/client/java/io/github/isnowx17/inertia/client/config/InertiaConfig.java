@@ -21,7 +21,7 @@ public final class InertiaConfig {
 	public static final String RENDER_SURFACE = "surface";
 	public static final String RENDER_PARTICLES = "particles";
 	public static final String QUALITY_CUSTOM = "custom";
-	private static final int CURRENT_VERSION = 9;
+	private static final int CURRENT_VERSION = 10;
 
 	/** Version of this file's defaults; older files get changed defaults migrated on load. */
 	public int configVersion = 0;
@@ -52,11 +52,11 @@ public final class InertiaConfig {
 	 */
 	public int particleLimit = 2_097_152;
 
-	/** Radius in blocks of the stream coming out of a flowing water source. */
-	public float sourceRadius = 0.3f;
-
-	/** Speed in blocks per second of the water leaving a flowing water source. */
-	public float sourceSpeed = 4.0f;
+	/**
+	 * Most water a flowing water source adds, in blocks of water per second. The source keeps its
+	 * block full; this only limits how fast it refills when the water drains quickly.
+	 */
+	public float sourceFlow = 3.0f;
 
 	/** Particles further than this many blocks from the player are removed. */
 	public int despawnDistance = 96;
@@ -254,8 +254,7 @@ public final class InertiaConfig {
 		particleSpacing = clamp(orDefault(particleSpacing, 0.1f), 0.05f, 0.25f);
 		maxParticles = clamp(maxParticles, 4_096, 2_097_152);
 		particleLimit = clamp(particleLimit, 65_536, 8_388_608);
-		sourceRadius = clamp(orDefault(sourceRadius, 0.3f), 0.1f, 1.0f);
-		sourceSpeed = clamp(orDefault(sourceSpeed, 4f), 0.5f, 15f);
+		sourceFlow = clamp(orDefault(sourceFlow, 3f), 0.25f, 20f);
 		surfaceCellSize = clamp(orDefault(surfaceCellSize, 0.15f), 0.05f, 0.5f);
 		substepsPerTick = clamp(substepsPerTick, 1, 8);
 		despawnDistance = clamp(despawnDistance, 16, 512);

@@ -15,5 +15,6 @@
   "message.inertia.source_added": "Inertia: su kaynağı açıldı (%s aktif)",
   "message.inertia.source_removed": "Inertia: su kaynağı kapatıldı (%s aktif)",
   "message.inertia.sources_cleared": "Inertia: tüm su kaynakları kapatıldı",
-  "message.inertia.source_limit": "Inertia: en fazla %s su kaynağı olabilir"
+  "message.inertia.source_limit": "Inertia: en fazla %s su kaynağı olabilir",
+  "message.inertia.source_blocked": "Inertia: orada bir blok var"
 }

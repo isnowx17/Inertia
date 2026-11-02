@@ -29,8 +29,6 @@ public final class FluidManager {
 	private static final int MAX_SOURCES = 16;
 	/** Ticks between two source toggles, so holding right-click does not flip a source on and off. */
 	private static final long SOURCE_TOGGLE_COOLDOWN = 15;
-	/** Clicking within this many blocks of a source turns it off. */
-	private static final double SOURCE_PICK_DISTANCE = 1.0;
 	private java.util.function.Supplier<String> waterShaderStatus = () -> "off";
 
 	public FluidManager(InertiaConfig config) {
@@ -88,11 +86,19 @@ public final class FluidManager {
 		}
 
 		try {
-			for (Source source : sources) {
-				if (simulation.spawnStream(source.position(), source.direction(), config.sourceRadius, config.sourceSpeed) == 0) {
-					break; // particle limit reached
+			// A block placed into a source stops it, like filling in a water source block.
+			sources.removeIf(source -> !isOpen(current, source.cell()));
+			long[] cells = new long[sources.size()];
+			// Water further away than the despawn distance would be removed again right away.
+			double reach = Math.max(0, config.despawnDistance - 2);
+			for (int i = 0; i < cells.length; i++) {
+				Source source = sources.get(i);
+				if (source.cell().getCenter().distanceToSqr(client.player.position()) < reach * reach) {
+					simulation.fillSource(source.cell(), config.sourceFlow);
 				}
+				cells[i] = source.cell().asLong();
 			}
+			simulation.setSources(cells);
 			simulation.tick(current, client.player);
 			playerSubmersion = config.playerInteraction ? PlayerFluidInteraction.apply(simulation, client.player) : 0;
 		} catch (Throwable t) {
@@ -118,8 +124,11 @@ public final class FluidManager {
 		}
 	}
 
-	/** Handler for {@link io.github.isnowx17.inertia.item.FluidSourceItem}. */
-	public boolean toggleSource(Player player, Vec3 position, Vec3 direction, boolean stopAll) {
+	/**
+	 * Handler for {@link io.github.isnowx17.inertia.item.FluidSourceItem}: places a flowing source in
+	 * a block (like placing a water source block), or removes the source already there.
+	 */
+	public boolean toggleSource(Player player, BlockPos cell, boolean stopAll) {
 		long now = player.level().getGameTime();
 		if (now - lastSourceToggle < SOURCE_TOGGLE_COOLDOWN) {
 			return false; // holding right-click repeats the use; only react to separate clicks
@@ -131,12 +140,19 @@ public final class FluidManager {
 			player.sendOverlayMessage(Component.translatable("message.inertia.sources_cleared"));
 			return true;
 		}
+		if (cell == null) {
+			return false;
+		}
 		for (int i = 0; i < sources.size(); i++) {
-			if (sources.get(i).position().distanceToSqr(position) < SOURCE_PICK_DISTANCE * SOURCE_PICK_DISTANCE) {
+			if (sources.get(i).cell().equals(cell)) {
 				sources.remove(i);
 				player.sendOverlayMessage(Component.translatable("message.inertia.source_removed", sources.size()));
 				return true;
 			}
+		}
+		if (!isOpen(player.level(), cell)) {
+			player.sendOverlayMessage(Component.translatable("message.inertia.source_blocked").withStyle(ChatFormatting.YELLOW));
+			return false;
 		}
 		if (sources.size() >= MAX_SOURCES) {
 			player.sendOverlayMessage(Component.translatable("message.inertia.source_limit", MAX_SOURCES).withStyle(ChatFormatting.YELLOW));
@@ -145,13 +161,18 @@ public final class FluidManager {
 		if (!ensureSimulation(player)) {
 			return false;
 		}
-		sources.add(new Source(position, direction));
+		sources.add(new Source(cell.immutable()));
 		player.sendOverlayMessage(Component.translatable("message.inertia.source_added", sources.size()));
 		return true;
 	}
 
-	/** A continuously flowing water source. */
-	private record Source(Vec3 position, Vec3 direction) {
+	/** Whether water can be in a block: nothing there to collide with. */
+	private static boolean isOpen(net.minecraft.world.level.Level level, BlockPos cell) {
+		return level.getBlockState(cell).getCollisionShape(level, cell).isEmpty();
+	}
+
+	/** A flowing water source: a block that is kept full of water, which flows out of it. */
+	private record Source(BlockPos cell) {
 	}
 
 	/** Checks that the GPU simulation can run and creates it on first use. */
