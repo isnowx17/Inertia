@@ -3,6 +3,14 @@
 All notable changes to Inertia are documented here. Versioning rules are described in
 [PLAN.md](PLAN.md#5-sürümleme).
 
+## [1.1.2]
+
+### Fixed
+- Falling water no longer stops speeding up after about a block and a half. Its top speed was
+  capped by a value tied to the particle size (5.2 blocks/second at `ultra`); it is now 20
+  blocks/second, limited to a quarter of a block per sub-step (15 at `high`/`medium`, 10 at `low`).
+  Continuous collision detection is on, so fast water does not pass through blocks.
+
 ## [1.1.1]
 
 ### Fixed

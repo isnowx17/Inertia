@@ -77,6 +77,10 @@ public final class FluidSimulation implements AutoCloseable {
 	private static final float SOURCE_MIN_SPEED = 1f;
 	/** A source block this full holds back water that cannot get away; new water then comes gently. */
 	private static final float SOURCE_POOLING_FILL = 0.6f;
+	/** Fastest falling or flowing water, in blocks per second (water falling 20 blocks reaches about this). */
+	private static final float MAX_WATER_SPEED = 20f;
+	/** Water moves at most this many blocks per sub-step. */
+	private static final float MAX_STEP_DISTANCE = 0.25f;
 	/** Floats per particle in the position and velocity arrays. */
 	public static final int STRIDE = 4;
 
@@ -220,8 +224,10 @@ public final class FluidSimulation implements AutoCloseable {
 			particleSystem.setParticleContactOffset(params.particleContactOffset());
 			particleSystem.setSolidRestOffset(params.solidRestOffset());
 			particleSystem.setFluidRestOffset(params.fluidRestOffset());
-			particleSystem.enableCCD(false);
-			particleSystem.setMaxVelocity(params.maxVelocity());
+			// Falling water keeps accelerating up to a realistic speed; continuous collision detection
+			// keeps such fast water from passing through blocks.
+			particleSystem.enableCCD(true);
+			particleSystem.setMaxVelocity(maxVelocity(params, substeps));
 			particleSystem.setSimulationFilterData(PhysXRuntime.filterData());
 			scene.addActor(particleSystem);
 
@@ -238,6 +244,15 @@ public final class FluidSimulation implements AutoCloseable {
 
 		terrain = new TerrainCollider(scene);
 		playerBody = new PlayerBody(scene);
+	}
+
+	/**
+	 * Fastest the water may move: up to {@link #MAX_WATER_SPEED}, but never more than a quarter of a
+	 * block per sub-step, so collisions with blocks stay reliable.
+	 */
+	static float maxVelocity(FluidParameters params, int substeps) {
+		float perSubstep = MAX_STEP_DISTANCE * substeps / TICK_SECONDS;
+		return Math.max(params.maxVelocity(), Math.min(MAX_WATER_SPEED, perSubstep));
 	}
 
 	/**
