@@ -2,7 +2,7 @@
 
 **Inertia is an advanced, professional physics engine for Minecraft: Java Edition.**
 
-Version 0.1 (beta) adds real-time, GPU-simulated water powered by **NVIDIA PhysX 5**. Pour it
+Inertia adds real-time, GPU-simulated water powered by **NVIDIA PhysX 5**. Pour it
 from a bucket and watch it splash, flow down stairs, pool in holes and push you around.
 
 > **Requirements:** an NVIDIA GPU with a current driver (CUDA), Windows x64 or Linux x64,
@@ -114,11 +114,19 @@ jars, creates the tag `v<version>` and publishes the release.
   Full blocks are greedily merged into large boxes, partial blocks use their collision boxes.
 - **Player:** a kinematic box keeps the water out of the player; the force of the water on the
   player is computed from the particles around them.
-- **Rendering:** a background job builds one continuous water surface from the particles
-  (surface nets over a smoothed particle density field, in parallel on all spare cores) as often
-  as it can; the render thread draws the newest surface, moved along the flow since it was built,
-  shaded with Fresnel reflection, biome colour and block light. Isolated splashes are drawn as
-  small droplets.
+- **Physics thread:** after every GPU step the positions and velocities are copied back in one
+  bulk copy each, and the per-particle work of the tick (lost particles, the water around the
+  player, the blocks that need collision geometry) is done right there, off the game thread.
+- **Surface:** for every new simulation result a background job builds one continuous water
+  surface from the particles, in parallel on all spare cores: every particle is spread over the
+  eight surrounding grid nodes, the density is smoothed with a small separable blur, and surface
+  nets extract the surface. Bricks of the grid deep inside a body of water are skipped, and so are
+  bricks the surface cannot cross. The job reads the simulation's arrays without copying them.
+- **Rendering:** the surface stays on the GPU: each new surface is uploaded once (one vertex per
+  surface point, 32-bit indices), and every frame the vertex shader moves the vertices along their
+  flow velocity for the time since the data was taken, so the water flows smoothly between
+  updates and the CPU does no per-frame work for it. Seen from outside the water, the faces turned
+  away from the camera are skipped. Isolated splashes are drawn as small droplets.
 - **Water shader:** after the main level pass the scene colour and depth are copied, then the
   surface is drawn with Inertia's own shader in a separate render pass: refraction through
   ripple-distorted lookups, per-pixel absorption from the depth difference (clear shallows, blue
@@ -133,8 +141,8 @@ jars, creates the tag `v<version>` and publishes the release.
   lines and patches. Every surface rebuild splats them into a top-down foam map (about 3 cm per
   texel at `ultra`, with mip levels) that the water shader samples; up close the foam breaks up into fine
   bubbles. Spray just above the water is drawn as small soft flecks.
-- **Threads:** the GPU step runs on a physics thread, the surface is meshed on a worker pool, and
-  the game thread only collects results and draws.
+- **Threads:** the GPU step runs on a physics thread, the surface and the foam are built on a
+  worker pool, and the game thread only collects results and draws.
 
 See [PLAN.md](PLAN.md) for scope and versioning, and [CHANGELOG.md](CHANGELOG.md) for changes.
 

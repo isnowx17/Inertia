@@ -3,8 +3,8 @@ package io.github.isnowx17.inertia.util;
 import it.unimi.dsi.fastutil.ints.IntArrayList;
 import it.unimi.dsi.fastutil.longs.Long2IntOpenHashMap;
 import it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap;
-import it.unimi.dsi.fastutil.longs.LongArrayList;
 import it.unimi.dsi.fastutil.longs.LongOpenHashSet;
+import java.util.ArrayDeque;
 import java.util.Arrays;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ForkJoinPool;
@@ -14,103 +14,134 @@ import java.util.stream.IntStream;
 /**
  * Turns fluid particles into one continuous water surface.
  *
- * <p>Every particle adds a smooth kernel {@code (1 - d²/R²)³} to a sparse density grid, together
- * with its kernel-weighted velocity. The surface is the iso-surface {@code density = threshold},
- * extracted with naive <em>surface nets</em>: one vertex per grid cell crossed by the surface (at the
- * average of the edge crossings) and one quad per grid edge crossed by the surface. Neighbouring
- * particles therefore melt into a single smooth sheet instead of being drawn as separate balls.
+ * <p>Every particle is spread over the eight surrounding nodes of a sparse density grid with
+ * linear (cloud-in-cell) weights, together with its velocity, and the density is then smoothed
+ * with a small separable blur. The surface is the iso-surface {@code density = threshold},
+ * extracted with naive <em>surface nets</em>: one vertex per grid cell crossed by the surface (at
+ * the average of the edge crossings) and one quad per grid edge crossed by the surface.
+ * Neighbouring particles therefore melt into a single smooth sheet instead of being drawn as
+ * separate balls.
  *
- * <p>Each vertex carries a normal (from the density gradient) and the local flow velocity, which
- * the renderer uses to move the surface between rebuilds.
+ * <p>Each vertex carries a normal (from the density gradient), the local flow velocity, which the
+ * renderer uses to move the surface between rebuilds, and the thickness of the water behind it.
  *
- * <p>The grid is stored in 16³ bricks. Splatting and extraction are split by brick, so every brick
- * is written by exactly one task and the work runs in parallel on the given pool without locks.
+ * <p>The grid is stored in 16³ bricks and every stage is split by brick, so every brick is written
+ * by exactly one task and the work runs in parallel on the given pool without locks. Bricks deep
+ * inside a body of water (the brick and all its neighbours full of particles) are not splatted at
+ * all but share one constant "solid" brick, and the extraction skips bricks the surface cannot
+ * cross, so the cost follows the surface rather than the volume of the water.
  * Instances are not thread-safe: one {@link #mesh} call at a time.
  */
 public final class FluidSurfaceMesher {
 	/** Floats per output vertex: x, y, z, nx, ny, nz, vx, vy, vz, thickness. */
 	public static final int VERTEX_STRIDE = 10;
-	/** Water thickness is measured at most this many cells into the water. */
-	private static final int MAX_THICKNESS_STEPS = 48;
+	/** Water thickness is measured in steps of two cells, at most this many. */
+	private static final int MAX_THICKNESS_STEPS = 24;
 
 	private static final int BRICK_BITS = 4;
 	private static final int BRICK = 1 << BRICK_BITS;
 	private static final int BRICK_MASK = BRICK - 1;
 	private static final int BRICK_VOLUME = BRICK * BRICK * BRICK;
-	/** Floats per node in a brick: density and the weighted velocity sum. */
-	private static final int CHANNELS = 4;
+	/**
+	 * Floats per node in a brick: smoothed density, flow velocity (vx, vy, vz) and the unsmoothed
+	 * density, which weights the velocity (nodes the blur reaches but no particle does have no flow).
+	 */
+	private static final int CHANNELS = 5;
+	private static final int RAW = 4;
+	/** After its nodes every brick stores its smallest and its largest density. */
+	private static final int MIN_DENSITY = BRICK_VOLUME * CHANNELS;
+	private static final int MAX_DENSITY = MIN_DENSITY + 1;
+	private static final int BRICK_FLOATS = MIN_DENSITY + 2;
+	private static final int STEP_Y = BRICK * CHANNELS;
+	private static final int STEP_Z = BRICK * BRICK * CHANNELS;
 	private static final int PAD = BRICK + 1;
 	private static final int PAD_VOLUME = PAD * PAD * PAD;
 	/** Particles below this fraction of the threshold count as isolated spray. */
-	private static final float SPARSE_FRACTION = 0.5f;
+	private static final float SPARSE_FRACTION = 0.6f;
+	/** A brick touched by at least this fraction of the particles of still water counts as full. */
+	private static final float FULL_FRACTION = 0.9f;
+	/** Standard deviation, per unit of radius, of the (1 - d²/r²)³ kernel the radius used to describe. */
+	private static final float KERNEL_SIGMA = 0.3015f;
+	/** Spare brick arrays kept for the next mesh. */
+	private static final int MAX_SPARE_BRICKS = 2048;
+	/** Particles are binned in at most this many parallel chunks. */
+	private static final int MAX_CHUNKS = 64;
 
 	private final float cellSize;
-	private final float radius;
+	private final float restDensity;
 	private final float threshold;
 	private final ForkJoinPool pool;
+	/** The density is blurred with [a, 1 - 2a, a] along every axis, this many times. */
+	private final float blurWeight;
+	private final int blurPasses;
+	/** Particles touching a brick of still water, times FULL_FRACTION. */
+	private final float fullCount;
+	/** Shared brick for water deep inside a body: still-water density, no flow. */
+	private final float[] solid;
 
-	/** Per brick: CHANNELS floats per node, node-major. */
+	/** Per brick: CHANNELS floats per node, node-major, then the density range. */
 	private Long2ObjectOpenHashMap<float[]> bricks = new Long2ObjectOpenHashMap<>();
+	// The particles of the latest mesh and how many bin maps they were sorted into.
+	private float[] meshedPositions;
+	private int meshedCount;
+	private int meshedStride;
+	private int meshedChunks;
+	private final ArrayDeque<float[]> spareBricks = new ArrayDeque<>();
 
 	private final ThreadLocal<float[]> padDensity = ThreadLocal.withInitial(() -> new float[PAD_VOLUME]);
 	private final ThreadLocal<float[]> padVelocity = ThreadLocal.withInitial(() -> new float[PAD_VOLUME * 3]);
+	private final ThreadLocal<float[]> padRaw = ThreadLocal.withInitial(() -> new float[PAD_VOLUME]);
+	private final ThreadLocal<float[]> blurPad;
+	/** Particle bins per chunk, kept between meshes so their lists keep their capacity. */
+	@SuppressWarnings("unchecked")
+	private final Long2ObjectOpenHashMap<IntArrayList>[] binMaps = new Long2ObjectOpenHashMap[MAX_CHUNKS];
+	private final ThreadLocal<float[]> blurLine;
 
 	/**
-	 * @param cellSize  grid spacing in blocks
-	 * @param radius    kernel radius in blocks; must be smaller than 16 cells
-	 * @param threshold iso-value of the surface; see {@link #restDensity}
-	 * @param pool      pool for parallel work, or {@code null} to run on the calling thread
+	 * @param cellSize          grid spacing in blocks
+	 * @param particleSpacing   distance between neighbouring particles in still water, in blocks
+	 * @param radius            smoothing radius in blocks; the density is smoothed by about 0.3 of it
+	 * @param thresholdFraction surface level as a fraction of the density of still water
+	 * @param pool              pool for parallel work, or {@code null} to run on the calling thread
 	 */
-	public FluidSurfaceMesher(float cellSize, float radius, float threshold, ForkJoinPool pool) {
-		if (!(cellSize > 0f) || !(radius > 0f) || !(threshold > 0f)) {
-			throw new IllegalArgumentException("cellSize, radius and threshold must be positive");
-		}
-		if (radius >= cellSize * BRICK) {
-			throw new IllegalArgumentException("radius must be smaller than " + BRICK + " cells");
+	public FluidSurfaceMesher(float cellSize, float particleSpacing, float radius, float thresholdFraction, ForkJoinPool pool) {
+		if (!(cellSize > 0f) || !(particleSpacing > 0f) || !(radius > 0f) || !(thresholdFraction > 0f)) {
+			throw new IllegalArgumentException("cellSize, particleSpacing, radius and thresholdFraction must be positive");
 		}
 		this.cellSize = cellSize;
-		this.radius = radius;
-		this.threshold = threshold;
+		this.restDensity = restDensity(particleSpacing, cellSize);
+		this.threshold = thresholdFraction * restDensity;
 		this.pool = pool;
-	}
 
-	public FluidSurfaceMesher(float cellSize, float radius, float threshold) {
-		this(cellSize, radius, threshold, null);
-	}
+		// The linear splat itself smooths with a variance of 1/6 cell²; the blur adds the rest.
+		float sigma = KERNEL_SIGMA * radius / cellSize;
+		float variance = Math.max(0f, sigma * sigma - 1f / 6f);
+		int passes = variance <= 1e-4f ? 0 : Math.min(4, (int) Math.ceil(variance / (2f / 3f)));
+		this.blurPasses = passes;
+		this.blurWeight = passes == 0 ? 0f : Math.min(1f / 3f, variance / (2f * passes));
 
-	/**
-	 * Average field density inside a body of water whose particles sit on a lattice with the given
-	 * spacing. Useful to pick a threshold as a fraction of the "full water" density.
-	 */
-	public static float restDensity(float particleSpacing, float radius) {
-		int reach = (int) Math.ceil(radius / particleSpacing) + 1;
-		float r2 = radius * radius;
-		float total = 0;
-		int samples = 0;
-		for (float ox = 0f; ox < 1f; ox += 0.25f) {
-			for (float oy = 0f; oy < 1f; oy += 0.25f) {
-				for (float oz = 0f; oz < 1f; oz += 0.25f) {
-					float sum = 0;
-					for (int i = -reach; i <= reach; i++) {
-						for (int j = -reach; j <= reach; j++) {
-							for (int k = -reach; k <= reach; k++) {
-								float dx = (i + ox) * particleSpacing;
-								float dy = (j + oy) * particleSpacing;
-								float dz = (k + oz) * particleSpacing;
-								float d2 = dx * dx + dy * dy + dz * dz;
-								if (d2 < r2) {
-									float t = 1f - d2 / r2;
-									sum += t * t * t;
-								}
-							}
-						}
-					}
-					total += sum;
-					samples++;
-				}
-			}
+		this.fullCount = FULL_FRACTION * BRICK_VOLUME * restDensity;
+		this.solid = new float[BRICK_FLOATS];
+		for (int i = 0; i < BRICK_VOLUME; i++) {
+			solid[i * CHANNELS] = restDensity;
+			solid[i * CHANNELS + RAW] = restDensity;
 		}
-		return total / samples;
+		solid[MIN_DENSITY] = restDensity;
+		solid[MAX_DENSITY] = restDensity;
+
+		int padSize = BRICK + 2 * passes;
+		this.blurPad = ThreadLocal.withInitial(() -> new float[padSize * padSize * padSize]);
+		this.blurLine = ThreadLocal.withInitial(() -> new float[padSize]);
+	}
+
+	public FluidSurfaceMesher(float cellSize, float particleSpacing, float radius, float thresholdFraction) {
+		this(cellSize, particleSpacing, radius, thresholdFraction, null);
+	}
+
+	/** Density of still water: the number of particles per grid cell. */
+	public static float restDensity(float particleSpacing, float cellSize) {
+		float ratio = cellSize / particleSpacing;
+		return ratio * ratio * ratio;
 	}
 
 	/** Output of {@link #mesh}. Quads reference vertices by index, four indices per quad. */
@@ -125,23 +156,45 @@ public final class FluidSurfaceMesher {
 		}
 	}
 
+	/** Density of the surface (particles per grid cell). */
 	public float threshold() {
 		return threshold;
+	}
+
+	/** Density of still water (particles per grid cell). */
+	public float restDensity() {
+		return restDensity;
+	}
+
+	public float cellSize() {
+		return cellSize;
+	}
+
+	/** Builds the surface of {@code count} particles stored as x, y, z triples. */
+	public Mesh mesh(float[] positions, float[] velocities, int count, Mesh target) {
+		return mesh(positions, velocities, count, 3, target);
 	}
 
 	/**
 	 * Builds the surface of {@code count} particles.
 	 *
-	 * @param positions  xyz per particle
-	 * @param velocities xyz per particle (blocks/second), or {@code null}
+	 * @param positions  x, y, z of particle i at {@code i * stride}
+	 * @param velocities x, y, z (blocks/second) of particle i at {@code i * stride}, or {@code null}
+	 * @param stride     floats per particle in both arrays, at least 3
 	 * @param target     mesh to fill (reused to avoid allocations), or {@code null} for a new one
 	 */
-	public Mesh mesh(float[] positions, float[] velocities, int count, Mesh target) {
+	public Mesh mesh(float[] positions, float[] velocities, int count, int stride, Mesh target) {
 		Mesh mesh = target != null ? target : new Mesh();
 		mesh.vertexCount = 0;
 		mesh.quadCount = 0;
 
-		bricks = splat(positions, velocities, count);
+		for (float[] brick : bricks.values()) {
+			recycle(brick);
+		}
+		bricks = splat(positions, velocities, count, stride);
+		meshedPositions = positions;
+		meshedCount = count;
+		meshedStride = stride;
 		if (!bricks.isEmpty()) {
 			extract(mesh);
 		}
@@ -161,7 +214,7 @@ public final class FluidSurfaceMesher {
 		return brick == null ? 0f : brick[localIndex(nx & BRICK_MASK, ny & BRICK_MASK, nz & BRICK_MASK) * CHANNELS];
 	}
 
-	/** Kernel-averaged flow velocity at the grid node nearest to a point, written to {@code out}. */
+	/** Flow velocity at the grid node nearest to a point, written to {@code out}. */
 	public void velocityAt(float x, float y, float z, float[] out) {
 		int nx = Math.round(x / cellSize);
 		int ny = Math.round(y / cellSize);
@@ -172,23 +225,26 @@ public final class FluidSurfaceMesher {
 			return;
 		}
 		int o = localIndex(nx & BRICK_MASK, ny & BRICK_MASK, nz & BRICK_MASK) * CHANNELS;
-		float d = brick[o];
-		if (d < 1e-6f) {
-			out[0] = out[1] = out[2] = 0f;
-			return;
-		}
-		out[0] = brick[o + 1] / d;
-		out[1] = brick[o + 2] / d;
-		out[2] = brick[o + 3] / d;
+		out[0] = brick[o + 1];
+		out[1] = brick[o + 2];
+		out[2] = brick[o + 3];
+	}
+
+	/** {@link #sparseParticles(float[], int, int)} for x, y, z triples. */
+	public int[] sparseParticles(float[] positions, int count) {
+		return sparseParticles(positions, count, 3);
 	}
 
 	/**
 	 * Indices of the particles in regions too sparse to form a surface (isolated spray droplets).
 	 * Particles at the corners of a body of water sit just outside the iso-surface too; the lower
-	 * cut-off keeps those out so they are not drawn twice.
+	 * cut-off keeps most of those out so they are not drawn twice.
 	 */
-	public int[] sparseParticles(float[] positions, int count) {
+	public int[] sparseParticles(float[] positions, int count, int stride) {
 		float cutoff = threshold * SPARSE_FRACTION;
+		if (positions == meshedPositions && count == meshedCount && stride == meshedStride) {
+			return sparseFromBins(cutoff);
+		}
 		int chunks = Math.max(1, Math.min(64, count / 4096));
 		IntArrayList[] parts = new IntArrayList[chunks];
 		parallelFor(chunks, c -> {
@@ -196,7 +252,7 @@ public final class FluidSurfaceMesher {
 			int from = (int) ((long) count * c / chunks);
 			int to = (int) ((long) count * (c + 1) / chunks);
 			for (int i = from; i < to; i++) {
-				if (densityAt(positions[i * 3], positions[i * 3 + 1], positions[i * 3 + 2]) < cutoff) {
+				if (densityAt(positions[i * stride], positions[i * stride + 1], positions[i * stride + 2]) < cutoff) {
 					list.add(i);
 				}
 			}
@@ -215,35 +271,135 @@ public final class FluidSurfaceMesher {
 		return result;
 	}
 
+	/**
+	 * {@link #sparseParticles} for the particles of the latest mesh, using its particle bins: bricks
+	 * dense enough everywhere (with the neighbours their particles' nearest nodes may lie in) are
+	 * skipped as a whole, and within a brick the density lookups stay in the same few bricks.
+	 */
+	private int[] sparseFromBins(float cutoff) {
+		float[] positions = meshedPositions;
+		int stride = meshedStride;
+		float inv = 1f / cellSize;
+		int chunks = meshedChunks;
+		IntArrayList[] parts = new IntArrayList[chunks];
+		parallelFor(chunks, c -> {
+			IntArrayList list = new IntArrayList();
+			Long2ObjectOpenHashMap<IntArrayList> map = binMaps[c];
+			if (map != null) {
+				for (Long2ObjectOpenHashMap.Entry<IntArrayList> entry : map.long2ObjectEntrySet()) {
+					long key = entry.getLongKey();
+					if (denseAround(key, cutoff)) {
+						continue;
+					}
+					IntArrayList bin = entry.getValue();
+					int[] indices = bin.elements();
+					long lastKey = Long.MIN_VALUE;
+					float[] last = null;
+					for (int k = 0, size = bin.size(); k < size; k++) {
+						int i = indices[k];
+						float gx = positions[i * stride] * inv;
+						float gy = positions[i * stride + 1] * inv;
+						float gz = positions[i * stride + 2] * inv;
+						// Each particle once: in the bin of its own brick, not the ones it reaches into.
+						if (brickKey(floor(gx) >> BRICK_BITS, floor(gy) >> BRICK_BITS, floor(gz) >> BRICK_BITS) != key) {
+							continue;
+						}
+						int nx = Math.round(gx);
+						int ny = Math.round(gy);
+						int nz = Math.round(gz);
+						long nodeBrick = brickKey(nx >> BRICK_BITS, ny >> BRICK_BITS, nz >> BRICK_BITS);
+						if (nodeBrick != lastKey) {
+							lastKey = nodeBrick;
+							last = bricks.get(nodeBrick);
+						}
+						float density = last == null ? 0f
+							: last[localIndex(nx & BRICK_MASK, ny & BRICK_MASK, nz & BRICK_MASK) * CHANNELS];
+						if (density < cutoff) {
+							list.add(i);
+						}
+					}
+				}
+			}
+			parts[c] = list;
+		});
+		int total = 0;
+		for (IntArrayList part : parts) {
+			total += part.size();
+		}
+		int[] result = new int[total];
+		int o = 0;
+		for (IntArrayList part : parts) {
+			part.getElements(0, result, o, part.size());
+			o += part.size();
+		}
+		Arrays.sort(result);
+		return result;
+	}
+
+	/** Whether a brick and its positive neighbours have at least {@code level} density everywhere. */
+	private boolean denseAround(long key, float level) {
+		int bx = brickX(key);
+		int by = brickY(key);
+		int bz = brickZ(key);
+		for (int dz = 0; dz <= 1; dz++) {
+			for (int dy = 0; dy <= 1; dy++) {
+				for (int dx = 0; dx <= 1; dx++) {
+					float[] brick = bricks.get(brickKey(bx + dx, by + dy, bz + dz));
+					if (brick == null || brick[MIN_DENSITY] < level) {
+						return false;
+					}
+				}
+			}
+		}
+		return true;
+	}
+
 	// ------------------------------------------------------------------------------------------
 	// Density field
 	// ------------------------------------------------------------------------------------------
 
-	private Long2ObjectOpenHashMap<float[]> splat(float[] positions, float[] velocities, int count) {
-		// 1. Bin particle indices by the brick their position lies in. Each chunk of particles gets
-		//    its own bin map so binning runs in parallel without merging.
+	private Long2ObjectOpenHashMap<float[]> splat(float[] positions, float[] velocities, int count, int stride) {
 		float inv = 1f / cellSize;
-		int chunks = Math.max(1, Math.min(64, count / 8192));
+
+		// 1. Bin particle indices by the brick of their lowest grid node. A particle on the last node
+		//    layer of a brick also reaches into the next brick(s), so it is binned there as well. Each
+		//    chunk of particles gets its own bin map so binning runs in parallel without merging.
+		int chunks = Math.max(1, Math.min(MAX_CHUNKS, count / 8192));
+		meshedChunks = chunks;
+		for (int c = chunks; c < MAX_CHUNKS; c++) {
+			if (binMaps[c] != null) {
+				binMaps[c].clear();
+			}
+		}
 		@SuppressWarnings("unchecked")
 		Long2ObjectOpenHashMap<IntArrayList>[] bins = new Long2ObjectOpenHashMap[chunks];
 		parallelFor(chunks, c -> {
-			Long2ObjectOpenHashMap<IntArrayList> map = new Long2ObjectOpenHashMap<>();
+			Long2ObjectOpenHashMap<IntArrayList> map = binMaps[c];
+			if (map == null) {
+				map = new Long2ObjectOpenHashMap<>();
+				binMaps[c] = map;
+			}
+			for (IntArrayList list : map.values()) {
+				list.clear();
+			}
 			int from = (int) ((long) count * c / chunks);
 			int to = (int) ((long) count * (c + 1) / chunks);
 			long lastKey = Long.MIN_VALUE;
 			IntArrayList last = null;
 			for (int i = from; i < to; i++) {
-				float px = positions[i * 3];
-				float py = positions[i * 3 + 1];
-				float pz = positions[i * 3 + 2];
+				float px = positions[i * stride];
+				float py = positions[i * stride + 1];
+				float pz = positions[i * stride + 2];
 				if (!Float.isFinite(px) || !Float.isFinite(py) || !Float.isFinite(pz)) {
 					continue;
 				}
-				long key = brickKey(
-					floorDiv16((int) Math.floor(px * inv)),
-					floorDiv16((int) Math.floor(py * inv)),
-					floorDiv16((int) Math.floor(pz * inv))
-				);
+				int ix = floor(px * inv);
+				int iy = floor(py * inv);
+				int iz = floor(pz * inv);
+				int bx = ix >> BRICK_BITS;
+				int by = iy >> BRICK_BITS;
+				int bz = iz >> BRICK_BITS;
+				long key = brickKey(bx, by, bz);
 				if (key != lastKey) {
 					lastKey = key;
 					last = map.get(key);
@@ -253,124 +409,331 @@ public final class FluidSurfaceMesher {
 					}
 				}
 				last.add(i);
+				int spill = ((ix & BRICK_MASK) == BRICK_MASK ? 1 : 0)
+					| ((iy & BRICK_MASK) == BRICK_MASK ? 2 : 0)
+					| ((iz & BRICK_MASK) == BRICK_MASK ? 4 : 0);
+				if (spill != 0) {
+					for (int s = 1; s < 8; s++) {
+						if ((s & ~spill) != 0) {
+							continue;
+						}
+						long next = brickKey(bx + (s & 1), by + ((s >> 1) & 1), bz + ((s >> 2) & 1));
+						IntArrayList list = map.get(next);
+						if (list == null) {
+							list = new IntArrayList();
+							map.put(next, list);
+						}
+						list.add(i);
+					}
+				}
 			}
+			// Forget bricks the water has left.
+			map.long2ObjectEntrySet().removeIf(entry -> entry.getValue().isEmpty());
 			bins[c] = map;
 		});
 
-		// 2. Every brick within one brick of a particle may receive density.
-		LongOpenHashSet targetSet = new LongOpenHashSet();
+		// 2. Particles per brick.
+		Long2IntOpenHashMap counts = new Long2IntOpenHashMap();
 		for (Long2ObjectOpenHashMap<IntArrayList> map : bins) {
-			for (long key : map.keySet()) {
-				int bx = brickX(key);
-				int by = brickY(key);
-				int bz = brickZ(key);
-				for (int dx = -1; dx <= 1; dx++) {
-					for (int dy = -1; dy <= 1; dy++) {
-						for (int dz = -1; dz <= 1; dz++) {
-							targetSet.add(brickKey(bx + dx, by + dy, bz + dz));
-						}
-					}
-				}
+			for (Long2ObjectOpenHashMap.Entry<IntArrayList> entry : map.long2ObjectEntrySet()) {
+				counts.addTo(entry.getLongKey(), entry.getValue().size());
 			}
 		}
-		long[] targets = targetSet.toLongArray();
+		long[] keys = counts.keySet().toLongArray();
+		int n = keys.length;
 
-		// 3. Fill each target brick from the particles in it and its neighbours. One task per brick,
-		//    so no two tasks ever write the same memory.
-		float[][] filled = new float[targets.length][];
-		float r2 = radius * radius;
-		float invR2 = 1f / r2;
-		parallelFor(targets.length, t -> {
-			long key = targets[t];
+		// 3. Deep bricks (the brick and all 26 neighbours full) need neither splatting nor blurring.
+		boolean[] deep = new boolean[n];
+		parallelFor(n, t -> {
+			long key = keys[t];
 			int bx = brickX(key);
 			int by = brickY(key);
 			int bz = brickZ(key);
-			int minX = bx << BRICK_BITS;
-			int minY = by << BRICK_BITS;
-			int minZ = bz << BRICK_BITS;
-			int maxX = minX + BRICK - 1;
-			int maxY = minY + BRICK - 1;
-			int maxZ = minZ + BRICK - 1;
-			float[] brick = null;
-
-			for (int dx = -1; dx <= 1; dx++) {
+			for (int dz = -1; dz <= 1; dz++) {
 				for (int dy = -1; dy <= 1; dy++) {
-					for (int dz = -1; dz <= 1; dz++) {
-						long source = brickKey(bx + dx, by + dy, bz + dz);
-						for (Long2ObjectOpenHashMap<IntArrayList> map : bins) {
-							IntArrayList list = map.get(source);
-							if (list == null) {
-								continue;
-							}
-							for (int n = 0, size = list.size(); n < size; n++) {
-								int i = list.getInt(n);
-								float px = positions[i * 3];
-								float py = positions[i * 3 + 1];
-								float pz = positions[i * 3 + 2];
-
-								int x0 = Math.max(minX, (int) Math.ceil((px - radius) * inv));
-								int x1 = Math.min(maxX, (int) Math.floor((px + radius) * inv));
-								int y0 = Math.max(minY, (int) Math.ceil((py - radius) * inv));
-								int y1 = Math.min(maxY, (int) Math.floor((py + radius) * inv));
-								int z0 = Math.max(minZ, (int) Math.ceil((pz - radius) * inv));
-								int z1 = Math.min(maxZ, (int) Math.floor((pz + radius) * inv));
-								if (x0 > x1 || y0 > y1 || z0 > z1) {
-									continue;
-								}
-
-								float vx = velocities != null ? velocities[i * 3] : 0f;
-								float vy = velocities != null ? velocities[i * 3 + 1] : 0f;
-								float vz = velocities != null ? velocities[i * 3 + 2] : 0f;
-
-								for (int nz = z0; nz <= z1; nz++) {
-									float ddz = nz * cellSize - pz;
-									float dz2 = ddz * ddz;
-									for (int ny = y0; ny <= y1; ny++) {
-										float ddy = ny * cellSize - py;
-										float dyz = ddy * ddy + dz2;
-										if (dyz >= r2) {
-											continue;
-										}
-										for (int nx = x0; nx <= x1; nx++) {
-											float ddx = nx * cellSize - px;
-											float d2 = ddx * ddx + dyz;
-											if (d2 >= r2) {
-												continue;
-											}
-											float w = 1f - d2 * invR2;
-											w = w * w * w;
-											if (brick == null) {
-												brick = new float[BRICK_VOLUME * CHANNELS];
-											}
-											int o = localIndex(nx - minX, ny - minY, nz - minZ) * CHANNELS;
-											brick[o] += w;
-											brick[o + 1] += w * vx;
-											brick[o + 2] += w * vy;
-											brick[o + 3] += w * vz;
-										}
-									}
-								}
-							}
+					for (int dx = -1; dx <= 1; dx++) {
+						if (counts.get(brickKey(bx + dx, by + dy, bz + dz)) < fullCount) {
+							return;
 						}
 					}
 				}
 			}
-			filled[t] = brick;
+			deep[t] = true;
 		});
 
-		Long2ObjectOpenHashMap<float[]> result = new Long2ObjectOpenHashMap<>();
-		for (int t = 0; t < targets.length; t++) {
-			if (filled[t] != null) {
-				result.put(targets[t], filled[t]);
+		// 4. Linear splat of density and velocity, one task per brick.
+		float[][] raw = obtain(n);
+		parallelFor(n, t -> {
+			if (deep[t]) {
+				return;
+			}
+			float[] brick = raw[t];
+			Arrays.fill(brick, 0f);
+			long key = keys[t];
+			int minX = brickX(key) << BRICK_BITS;
+			int minY = brickY(key) << BRICK_BITS;
+			int minZ = brickZ(key) << BRICK_BITS;
+			for (Long2ObjectOpenHashMap<IntArrayList> map : bins) {
+				IntArrayList list = map.get(key);
+				if (list == null) {
+					continue;
+				}
+				int[] indices = list.elements();
+				for (int k = 0, size = list.size(); k < size; k++) {
+					int i = indices[k];
+					int o = i * stride;
+					float gx = positions[o] * inv - minX;
+					float gy = positions[o + 1] * inv - minY;
+					float gz = positions[o + 2] * inv - minZ;
+					float vx = velocities != null ? velocities[o] : 0f;
+					float vy = velocities != null ? velocities[o + 1] : 0f;
+					float vz = velocities != null ? velocities[o + 2] : 0f;
+					splatParticle(brick, gx, gy, gz, vx, vy, vz);
+				}
+			}
+			// Weighted velocity sums become node velocities; keep the unsmoothed density.
+			for (int node = 0; node < BRICK_VOLUME; node++) {
+				int o = node * CHANNELS;
+				float d = brick[o];
+				brick[o + RAW] = d;
+				if (d > 1e-6f) {
+					float invD = 1f / d;
+					brick[o + 1] *= invD;
+					brick[o + 2] *= invD;
+					brick[o + 3] *= invD;
+				} else {
+					brick[o + 1] = 0f;
+					brick[o + 2] = 0f;
+					brick[o + 3] = 0f;
+				}
+			}
+			updateRange(brick);
+		});
+		for (int t = 0; t < n; t++) {
+			if (deep[t]) {
+				recycle(raw[t]);
+				raw[t] = solid;
+			}
+		}
+
+		// 5. Smooth the density (velocity is copied); deep bricks stay solid.
+		Long2ObjectOpenHashMap<float[]> result = new Long2ObjectOpenHashMap<>(n);
+		if (blurPasses == 0) {
+			for (int t = 0; t < n; t++) {
+				result.put(keys[t], raw[t]);
+			}
+			return result;
+		}
+		Long2ObjectOpenHashMap<float[]> rawMap = new Long2ObjectOpenHashMap<>(n);
+		for (int t = 0; t < n; t++) {
+			rawMap.put(keys[t], raw[t]);
+		}
+		float[][] smooth = obtain(n);
+		parallelFor(n, t -> {
+			if (deep[t]) {
+				return;
+			}
+			blur(keys[t], raw[t], rawMap, smooth[t]);
+		});
+		for (int t = 0; t < n; t++) {
+			if (deep[t]) {
+				recycle(smooth[t]);
+				result.put(keys[t], solid);
+			} else {
+				recycle(raw[t]);
+				result.put(keys[t], smooth[t]);
 			}
 		}
 		return result;
 	}
 
+	/** Adds one particle at local grid coordinates (g) to the up to eight nodes around it. */
+	private static void splatParticle(float[] brick, float gx, float gy, float gz, float vx, float vy, float vz) {
+		// Local coordinates are at least -1 (particles binned in from the previous brick).
+		int lx = (int) (gx + 1f) - 1;
+		int ly = (int) (gy + 1f) - 1;
+		int lz = (int) (gz + 1f) - 1;
+		float fx = gx - lx;
+		float fy = gy - ly;
+		float fz = gz - lz;
+		float wx0 = 1f - fx;
+		float wy0 = 1f - fy;
+		float wz0 = 1f - fz;
+		if (lx >= 0 && ly >= 0 && lz >= 0 && lx < BRICK - 1 && ly < BRICK - 1 && lz < BRICK - 1) {
+			int o = localIndex(lx, ly, lz) * CHANNELS;
+			float w00 = wy0 * wz0;
+			float w10 = fy * wz0;
+			float w01 = wy0 * fz;
+			float w11 = fy * fz;
+			deposit(brick, o, wx0 * w00, vx, vy, vz);
+			deposit(brick, o + CHANNELS, fx * w00, vx, vy, vz);
+			deposit(brick, o + STEP_Y, wx0 * w10, vx, vy, vz);
+			deposit(brick, o + STEP_Y + CHANNELS, fx * w10, vx, vy, vz);
+			deposit(brick, o + STEP_Z, wx0 * w01, vx, vy, vz);
+			deposit(brick, o + STEP_Z + CHANNELS, fx * w01, vx, vy, vz);
+			deposit(brick, o + STEP_Z + STEP_Y, wx0 * w11, vx, vy, vz);
+			deposit(brick, o + STEP_Z + STEP_Y + CHANNELS, fx * w11, vx, vy, vz);
+			return;
+		}
+		// Particle on the border: only the nodes inside this brick.
+		for (int c = 0; c < 8; c++) {
+			int nx = lx + (c & 1);
+			int ny = ly + ((c >> 1) & 1);
+			int nz = lz + ((c >> 2) & 1);
+			if (nx < 0 || ny < 0 || nz < 0 || nx >= BRICK || ny >= BRICK || nz >= BRICK) {
+				continue;
+			}
+			float w = ((c & 1) == 0 ? wx0 : fx) * ((c & 2) == 0 ? wy0 : fy) * ((c & 4) == 0 ? wz0 : fz);
+			deposit(brick, localIndex(nx, ny, nz) * CHANNELS, w, vx, vy, vz);
+		}
+	}
+
+	/** Floor for coordinates of either sign. */
+	private static int floor(float v) {
+		int i = (int) v;
+		return v < i ? i - 1 : i;
+	}
+
+	private static void deposit(float[] brick, int o, float w, float vx, float vy, float vz) {
+		brick[o] += w;
+		brick[o + 1] += w * vx;
+		brick[o + 2] += w * vy;
+		brick[o + 3] += w * vz;
+	}
+
+	private static void updateRange(float[] brick) {
+		float min = Float.POSITIVE_INFINITY;
+		float max = Float.NEGATIVE_INFINITY;
+		for (int node = 0; node < BRICK_VOLUME; node++) {
+			float d = brick[node * CHANNELS];
+			if (d < min) {
+				min = d;
+			}
+			if (d > max) {
+				max = d;
+			}
+		}
+		brick[MIN_DENSITY] = min;
+		brick[MAX_DENSITY] = max;
+	}
+
+	/**
+	 * Smooths the density of one brick into {@code target} with the separable blur; the halo comes
+	 * from the neighbouring bricks (zero where there is no water). Velocities are copied.
+	 */
+	private void blur(long key, float[] own, Long2ObjectOpenHashMap<float[]> raw, float[] target) {
+		int h = blurPasses;
+		int size = BRICK + 2 * h;
+		float[] pad = blurPad.get();
+		Arrays.fill(pad, 0f);
+		int bx = brickX(key);
+		int by = brickY(key);
+		int bz = brickZ(key);
+		for (int dz = -1; dz <= 1; dz++) {
+			for (int dy = -1; dy <= 1; dy++) {
+				for (int dx = -1; dx <= 1; dx++) {
+					float[] src = dx == 0 && dy == 0 && dz == 0 ? own : raw.get(brickKey(bx + dx, by + dy, bz + dz));
+					if (src == null) {
+						continue;
+					}
+					// Source node range inside the neighbour and where it lands in the padded block.
+					int sx0 = dx < 0 ? BRICK - h : 0;
+					int sx1 = dx > 0 ? h : BRICK;
+					int sy0 = dy < 0 ? BRICK - h : 0;
+					int sy1 = dy > 0 ? h : BRICK;
+					int sz0 = dz < 0 ? BRICK - h : 0;
+					int sz1 = dz > 0 ? h : BRICK;
+					int ox = h + dx * BRICK;
+					int oy = h + dy * BRICK;
+					int oz = h + dz * BRICK;
+					for (int z = sz0; z < sz1; z++) {
+						for (int y = sy0; y < sy1; y++) {
+							int row = ((z + oz) * size + (y + oy)) * size + ox;
+							int srcRow = localIndex(0, y, z) * CHANNELS;
+							for (int x = sx0; x < sx1; x++) {
+								pad[row + x] = src[srcRow + x * CHANNELS];
+							}
+						}
+					}
+				}
+			}
+		}
+		for (int pass = 0; pass < h; pass++) {
+			blurAxis(pad, size, 1);
+			blurAxis(pad, size, size);
+			blurAxis(pad, size, size * size);
+		}
+		for (int z = 0; z < BRICK; z++) {
+			for (int y = 0; y < BRICK; y++) {
+				int row = ((z + h) * size + (y + h)) * size + h;
+				for (int x = 0; x < BRICK; x++) {
+					int o = localIndex(x, y, z) * CHANNELS;
+					target[o] = pad[row + x];
+					target[o + 1] = own[o + 1];
+					target[o + 2] = own[o + 2];
+					target[o + 3] = own[o + 3];
+					target[o + RAW] = own[o + RAW];
+				}
+			}
+		}
+		updateRange(target);
+	}
+
+	/** One pass of [a, 1 - 2a, a] along the axis with the given index step; zero beyond the ends. */
+	private void blurAxis(float[] pad, int size, int step) {
+		float a = blurWeight;
+		float b = 1f - 2f * a;
+		float[] line = blurLine.get();
+		int lines = size * size;
+		for (int l = 0; l < lines; l++) {
+			int start;
+			if (step == 1) {
+				start = l * size;
+			} else if (step == size) {
+				start = (l / size) * size * size + (l % size);
+			} else {
+				start = l;
+			}
+			boolean any = false;
+			for (int i = 0, p = start; i < size; i++, p += step) {
+				float v = pad[p];
+				line[i] = v;
+				any |= v != 0f;
+			}
+			if (!any) {
+				continue;
+			}
+			float left = 0f;
+			for (int i = 0, p = start; i < size; i++, p += step) {
+				float centre = line[i];
+				float right = i + 1 < size ? line[i + 1] : 0f;
+				pad[p] = b * centre + a * (left + right);
+				left = centre;
+			}
+		}
+	}
+
+	/** Brick arrays for one stage, from the spare pool where possible (contents undefined). */
+	private float[][] obtain(int n) {
+		float[][] arrays = new float[n][];
+		for (int i = 0; i < n; i++) {
+			float[] spare = spareBricks.poll();
+			arrays[i] = spare != null ? spare : new float[BRICK_FLOATS];
+		}
+		return arrays;
+	}
+
+	private void recycle(float[] brick) {
+		if (brick != null && brick != solid && brick.length == BRICK_FLOATS && spareBricks.size() < MAX_SPARE_BRICKS) {
+			spareBricks.add(brick);
+		}
+	}
+
 	/** Copies a brick plus its one-node border on the positive sides into the padded arrays. */
-	private void loadPadded(int bx, int by, int bz, float[] density, float[] velocity) {
+	private void loadPadded(int bx, int by, int bz, float[] density, float[] velocity, float[] raw) {
 		Arrays.fill(density, 0f);
 		Arrays.fill(velocity, 0f);
+		Arrays.fill(raw, 0f);
 		for (int dz = 0; dz <= 1; dz++) {
 			for (int dy = 0; dy <= 1; dy++) {
 				for (int dx = 0; dx <= 1; dx++) {
@@ -393,12 +756,43 @@ public final class FluidSurfaceMesher {
 								velocity[d * 3] = src[s + 1];
 								velocity[d * 3 + 1] = src[s + 2];
 								velocity[d * 3 + 2] = src[s + 3];
+								raw[d] = src[s + RAW];
 							}
 						}
 					}
 				}
 			}
 		}
+	}
+
+	/**
+	 * Whether the surface may cross the cells of a brick: the cells reach one node into the
+	 * positive neighbours, so all eight bricks must be entirely inside or entirely outside.
+	 */
+	private boolean mayHaveSurface(long key) {
+		int bx = brickX(key);
+		int by = brickY(key);
+		int bz = brickZ(key);
+		boolean allInside = true;
+		boolean allOutside = true;
+		for (int dz = 0; dz <= 1; dz++) {
+			for (int dy = 0; dy <= 1; dy++) {
+				for (int dx = 0; dx <= 1; dx++) {
+					float[] brick = bricks.get(brickKey(bx + dx, by + dy, bz + dz));
+					if (brick == null) {
+						allInside = false;
+					} else {
+						if (brick[MIN_DENSITY] <= threshold) {
+							allInside = false;
+						}
+						if (brick[MAX_DENSITY] > threshold) {
+							allOutside = false;
+						}
+					}
+				}
+			}
+		}
+		return !allInside && !allOutside;
 	}
 
 	// ------------------------------------------------------------------------------------------
@@ -463,7 +857,7 @@ public final class FluidSurfaceMesher {
 
 		// Pass 1 (parallel): vertices per brick.
 		BrickSurface[] surfaces = new BrickSurface[cellBricks.length];
-		parallelFor(cellBricks.length, b -> surfaces[b] = vertices(cellBricks[b]));
+		parallelFor(cellBricks.length, b -> surfaces[b] = mayHaveSurface(cellBricks[b]) ? vertices(cellBricks[b]) : null);
 
 		// Global vertex numbering.
 		Long2IntOpenHashMap surfaceIndex = new Long2IntOpenHashMap();
@@ -517,7 +911,8 @@ public final class FluidSurfaceMesher {
 		int bz = brickZ(key);
 		float[] density = padDensity.get();
 		float[] velocity = padVelocity.get();
-		loadPadded(bx, by, bz, density, velocity);
+		float[] raw = padRaw.get();
+		loadPadded(bx, by, bz, density, velocity, raw);
 
 		boolean anyInside = false;
 		boolean anyOutside = false;
@@ -561,7 +956,7 @@ public final class FluidSurfaceMesher {
 						Arrays.fill(surface.localVertex, -1);
 					}
 					int local = localIndex(lx, ly, lz);
-					surface.localVertex[local] = addVertex(surface, baseX + lx, baseY + ly, baseZ + lz, corner, velocity, p);
+					surface.localVertex[local] = addVertex(surface, baseX + lx, baseY + ly, baseZ + lz, corner, velocity, raw, p);
 
 					boolean inside = (mask & 1) != 0;
 					int flags = inside ? INSIDE : 0;
@@ -586,7 +981,7 @@ public final class FluidSurfaceMesher {
 		return surface;
 	}
 
-	private int addVertex(BrickSurface surface, int x, int y, int z, float[] corner, float[] velocity, int p) {
+	private int addVertex(BrickSurface surface, int x, int y, int z, float[] corner, float[] velocity, float[] raw, int p) {
 		// Average of the edge crossings, in cell-local coordinates.
 		float sx = 0;
 		float sy = 0;
@@ -624,17 +1019,18 @@ public final class FluidSurfaceMesher {
 			nz = -gz / len;
 		}
 
-		// Density-weighted flow velocity around the cell.
+		// Average of the flow velocity at the cell corners, weighted by the particles there.
 		float densitySum = 0;
 		float vx = 0;
 		float vy = 0;
 		float vz = 0;
 		for (int c = 0; c < 8; c++) {
 			int i = p + CORNER_OFFSETS[c];
-			densitySum += corner[c];
-			vx += velocity[i * 3];
-			vy += velocity[i * 3 + 1];
-			vz += velocity[i * 3 + 2];
+			float w = raw[i];
+			densitySum += w;
+			vx += w * velocity[i * 3];
+			vy += w * velocity[i * 3 + 1];
+			vz += w * velocity[i * 3 + 2];
 		}
 		if (densitySum > 1e-6f) {
 			vx /= densitySum;
@@ -664,16 +1060,30 @@ public final class FluidSurfaceMesher {
 
 	/**
 	 * How far the water extends behind a surface point, measured from the point into the water
-	 * (against the normal) until the field drops below the threshold. On a pool surface this is the
-	 * depth of the water; it drives depth-dependent colour and transparency.
+	 * (against the normal) in steps of two cells until the field drops below the threshold. On a
+	 * pool surface this is the depth of the water; it drives depth-dependent colour and transparency.
 	 */
 	private float thickness(float x, float y, float z, float nx, float ny, float nz) {
-		float step = cellSize;
+		float step = cellSize * 2f;
+		float inv = 1f / cellSize;
+		float px = x - nx * cellSize * 0.5f;
+		float py = y - ny * cellSize * 0.5f;
+		float pz = z - nz * cellSize * 0.5f;
+		long lastKey = Long.MIN_VALUE;
+		float[] brick = null;
 		int steps = 0;
-		float px = x - nx * step * 0.5f;
-		float py = y - ny * step * 0.5f;
-		float pz = z - nz * step * 0.5f;
-		while (steps < MAX_THICKNESS_STEPS && densityAt(px, py, pz) > threshold) {
+		while (steps < MAX_THICKNESS_STEPS) {
+			int gx = Math.round(px * inv);
+			int gy = Math.round(py * inv);
+			int gz = Math.round(pz * inv);
+			long key = brickKey(gx >> BRICK_BITS, gy >> BRICK_BITS, gz >> BRICK_BITS);
+			if (key != lastKey) {
+				lastKey = key;
+				brick = bricks.get(key);
+			}
+			if (brick == null || brick[localIndex(gx & BRICK_MASK, gy & BRICK_MASK, gz & BRICK_MASK) * CHANNELS] <= threshold) {
+				break;
+			}
 			px -= nx * step;
 			py -= ny * step;
 			pz -= nz * step;
@@ -793,10 +1203,6 @@ public final class FluidSurfaceMesher {
 			}
 			throw new IllegalStateException(cause);
 		}
-	}
-
-	private static int floorDiv16(int n) {
-		return n >> BRICK_BITS;
 	}
 
 	private static final int COORD_BITS = 21;

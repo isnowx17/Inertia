@@ -21,9 +21,14 @@ uniform sampler2D SceneColor;
 uniform sampler2D SceneDepth;
 uniform sampler2D FoamMap;
 
+// Thin water fades into the ground over this many blocks.
+const float SHORE_SOFTNESS = 0.08;
+// The deep water colour is the biome water colour darkened to this fraction.
+const float DEEP_FRACTION = 0.35;
+
 layout(location = 0) in float sphericalVertexDistance;
 layout(location = 1) in float cylindricalVertexDistance;
-layout(location = 2) in vec4 vertexColor;
+layout(location = 2) in vec3 localPosition;
 layout(location = 3) in vec4 lightMapColor;
 layout(location = 4) in vec3 relativePosition;
 layout(location = 5) in vec3 surfaceNormal;
@@ -202,8 +207,8 @@ void main() {
         normal = -normal;
     }
 
-    // Ripples, mostly on surfaces that face up.
-    vec3 worldPosition = relativePosition + ModelOffset;
+    // Ripples, mostly on surfaces that face up. Patterns are anchored to the water's origin.
+    vec3 worldPosition = localPosition;
     float flatness = smoothstep(0.2, 0.9, abs(normal.y));
     float fade = 1.0 / (1.0 + sphericalVertexDistance * 0.04);
     vec2 slope = rippleSlope(worldPosition.xz, time) * rippleStrength * flatness * fade;
@@ -230,7 +235,7 @@ void main() {
     // turns turquoise and then deep blue.
     vec3 extinction = vec3(0.42, 0.085, 0.065) * absorption;
     vec3 transmittance = exp(-extinction * distanceInWater);
-    vec3 waterTint = vertexColor.rgb;
+    vec3 waterTint = deepColor / DEEP_FRACTION;
     vec3 turquoise = vec3(0.05, 0.32, 0.38);
     vec3 scattered = mix(deepColor * 1.6, turquoise, 0.45) * diffuseLight * lightMapColor.rgb;
 
@@ -238,7 +243,8 @@ void main() {
     // deeper by the ratio of the depths.
     float causticStrength = TextureMat[3][1];
     if (causticStrength > 0.0 && distanceInWater > 0.02) {
-        vec3 groundPosition = relativePosition * (sceneDepth / max(waterDepth, 1e-3)) + ModelOffset;
+        // relativePosition = localPosition + ModelOffset, so this is the ground point in pattern space.
+        vec3 groundPosition = relativePosition * (sceneDepth / max(waterDepth, 1e-3)) - ModelOffset;
         float pattern = caustics(groundPosition.xz, time);
         float reach = smoothstep(0.03, 0.4, distanceInWater) * exp(-distanceInWater * 0.25);
         behind *= 1.0 + pattern * causticStrength * 1.6 * reach * daylight * lightMapColor.g;
@@ -277,10 +283,8 @@ void main() {
     float foamAmount = texture(FoamMap, foamUv).r;
     float foamHeight = textureLod(FoamMap, foamUv, 0.0).g * 255.0;
     float footprint = max(length(dFdx(worldPosition)), length(dFdy(worldPosition)));
-    vec2 foamDetailPosition = mod(worldPosition.xz, 256.0);
-    float bubbles = foamNoise(foamDetailPosition * 55.0) * 0.55 + foamNoise(foamDetailPosition * 110.0) * 0.45;
     float foamOpacity = 0.0;
-    if (TextureMat[3][3] > 0.5) {
+    if (TextureMat[3][3] > 0.5 && foamAmount > 0.002) {
         bool insideMap = all(greaterThanEqual(foamUv, vec2(0.0))) && all(lessThanEqual(foamUv, vec2(1.0)));
         // Only on the surface the foam floats on (not on a stream passing above it), facing up.
         float onSurface = 1.0 - smoothstep(6.0, 12.0, abs(surfaceInfo.y - foamHeight));
@@ -288,7 +292,11 @@ void main() {
         float amount = insideMap ? foamAmount * onSurface * facingUp : 0.0;
         // Up close the foam breaks up into bubbles.
         float detail = smoothstep(0.03, 0.008, footprint);
-        amount *= 1.0 + (bubbles - 0.5) * 0.8 * detail;
+        if (detail > 0.0) {
+            vec2 foamDetailPosition = mod(worldPosition.xz, 256.0);
+            float bubbles = foamNoise(foamDetailPosition * 55.0) * 0.55 + foamNoise(foamDetailPosition * 110.0) * 0.45;
+            amount *= 1.0 + (bubbles - 0.5) * 0.8 * detail;
+        }
         foamOpacity = pow(clamp(amount * 1.15, 0.0, 1.0), 1.6) * 0.97;
         vec3 foamColor = vec3(0.92, 0.95, 0.98) * diffuseLight * lightMapColor.rgb;
         foamColor += vec3(1.0, 0.97, 0.9) * max(dot(normal, sunDirection), 0.0) * daylight * 0.12 * lightMapColor.g;
@@ -296,7 +304,7 @@ void main() {
     }
 
     // Soft shoreline: very thin water fades into the ground instead of ending in a hard edge.
-    float edge = smoothstep(0.0, TextureMat[1].w, distanceInWater + fresnel * 0.2);
+    float edge = smoothstep(0.0, SHORE_SOFTNESS, distanceInWater + fresnel * 0.2);
     color *= texture(Sampler0, vec2(0.5)).rgb;
 
     vec4 result = vec4(color, mix(edge, 1.0, foamOpacity));

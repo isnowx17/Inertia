@@ -13,14 +13,18 @@ import com.mojang.renderpearl.api.pipeline.ColorTargetState;
 import com.mojang.renderpearl.api.pipeline.CompareOp;
 import com.mojang.renderpearl.api.pipeline.DepthStencilState;
 import com.mojang.renderpearl.api.pipeline.CompiledRenderPipeline;
+import com.mojang.renderpearl.api.pipeline.IndexType;
 import com.mojang.renderpearl.api.pipeline.PrimitiveTopology;
 import com.mojang.renderpearl.api.pipeline.RenderPipeline;
 import com.mojang.renderpearl.api.pipeline.UniformType;
 import com.mojang.renderpearl.api.textures.FilterMode;
 import com.mojang.renderpearl.api.textures.GpuTexture;
 import com.mojang.renderpearl.api.textures.GpuTextureView;
+import com.mojang.renderpearl.api.vertex.VertexFormat;
+import com.mojang.renderpearl.api.vertex.VertexFormatElement;
 import io.github.isnowx17.inertia.Inertia;
 import io.github.isnowx17.inertia.util.SurfaceFoam;
+import io.github.isnowx17.inertia.util.WaterVertexLayout;
 import java.nio.ByteBuffer;
 import java.util.List;
 import java.util.Optional;
@@ -44,6 +48,10 @@ import org.joml.Vector4f;
  * both the OpenGL and the Vulkan backend. The foam map is uploaded at the same point, with all its
  * mip levels.
  *
+ * <p>The water surface itself stays on the GPU: its vertices ({@link WaterVertexLayout}) and its
+ * triangle indices are uploaded only when the surface changes, and the vertex shader moves them
+ * along their flow velocity every frame.
+ *
  * <p>If the shader fails to compile on a machine, {@link #isAvailable()} turns false and the
  * renderer falls back to the vanilla entity pipeline.
  */
@@ -54,13 +62,41 @@ public final class WaterPass implements AutoCloseable {
 		.withUniform("FoamMap", UniformType.COMBINED_IMAGE_SAMPLER)
 		.build();
 
+	/** Vertex format of the water surface; matches {@link WaterVertexLayout} and the vertex shader. */
+	public static final VertexFormat SURFACE_FORMAT = VertexFormat.builder(0)
+		.addAttribute("Position", GpuFormat.RGB32_FLOAT)
+		.addAttribute("Velocity", GpuFormat.RGB32_FLOAT)
+		.addAttribute("UV0", GpuFormat.RG32_FLOAT)
+		.addAttribute("Info", GpuFormat.RG32_FLOAT)
+		.addAttribute("UV2", GpuFormat.RG16_SINT)
+		.addAttribute("Normal", GpuFormat.RGBA8_SNORM)
+		.build();
+
 	public static final RenderPipeline PIPELINE = RenderPipeline.builder(RenderPipelines.ENTITY_SNIPPET)
 		.withLocation(Inertia.id("pipeline/water"))
 		.withVertexShader(Inertia.id("core/water"))
 		.withFragmentShader(Inertia.id("core/water"))
 		.withBindGroupLayout(SCENE_SAMPLERS)
+		.withVertexBinding(0, SURFACE_FORMAT)
+		.withPrimitiveTopology(PrimitiveTopology.TRIANGLES)
 		.withColorTargetState(new ColorTargetState(BlendFunction.TRANSLUCENT))
 		.withCull(false)
+		.build();
+
+	/**
+	 * The same, without the faces turned away from the camera. Seen from outside the water those are
+	 * the inner sides of the surface (a pool's floor seen through its top), always hidden behind a
+	 * front face, so skipping them halves the shading work.
+	 */
+	public static final RenderPipeline PIPELINE_CULLED = RenderPipeline.builder(RenderPipelines.ENTITY_SNIPPET)
+		.withLocation(Inertia.id("pipeline/water_culled"))
+		.withVertexShader(Inertia.id("core/water"))
+		.withFragmentShader(Inertia.id("core/water"))
+		.withBindGroupLayout(SCENE_SAMPLERS)
+		.withVertexBinding(0, SURFACE_FORMAT)
+		.withPrimitiveTopology(PrimitiveTopology.TRIANGLES)
+		.withColorTargetState(new ColorTargetState(BlendFunction.TRANSLUCENT))
+		.withCull(true)
 		.build();
 
 	/**
@@ -86,6 +122,15 @@ public final class WaterPass implements AutoCloseable {
 	public record Overlay(ByteBuffer vertices, int indexCount, Identifier texture) {
 	}
 
+	/**
+	 * A water surface: vertices in {@link WaterVertexLayout}, 32-bit triangle indices. Uploaded only
+	 * when {@code serial} differs from the surface already on the GPU.
+	 *
+	 * @param cullBackFaces whether the camera is outside the water, so faces turned away are hidden
+	 */
+	public record Surface(ByteBuffer vertices, int vertexCount, ByteBuffer indices, int indexCount, long serial, boolean cullBackFaces) {
+	}
+
 	private enum Status { UNKNOWN, AVAILABLE, FAILED }
 
 	private Status status = Status.UNKNOWN;
@@ -94,6 +139,9 @@ public final class WaterPass implements AutoCloseable {
 	private GpuTexture sceneDepth;
 	private GpuTextureView sceneDepthView;
 	private GpuBuffer vertexBuffer;
+	private GpuBuffer surfaceVertices;
+	private GpuBuffer surfaceIndices;
+	private long uploadedSurface = Long.MIN_VALUE;
 	private GpuTexture foamTexture;
 	private GpuTextureView foamView;
 	private SurfaceFoam.Map uploadedFoam;
@@ -105,6 +153,7 @@ public final class WaterPass implements AutoCloseable {
 	/** Registers the pipeline so it is compiled with the other shaders on every resource reload. */
 	public static void register() {
 		RenderPipelines.registerOptional(PIPELINE);
+		RenderPipelines.registerOptional(PIPELINE_CULLED);
 		RenderPipelines.registerOptional(OVERLAY_PIPELINE);
 	}
 
@@ -112,14 +161,16 @@ public final class WaterPass implements AutoCloseable {
 	public boolean isAvailable() {
 		if (status == Status.UNKNOWN) {
 			CompiledRenderPipeline compiled = null;
+			CompiledRenderPipeline culled = null;
 			CompiledRenderPipeline overlay = null;
 			try {
 				compiled = RenderSystem.getCompiledPipelineNullable(PIPELINE);
+				culled = RenderSystem.getCompiledPipelineNullable(PIPELINE_CULLED);
 				overlay = RenderSystem.getCompiledPipelineNullable(OVERLAY_PIPELINE);
 			} catch (RuntimeException e) {
 				Inertia.LOGGER.error("Inertia water shader could not be compiled", e);
 			}
-			status = compiled != null && overlay != null ? Status.AVAILABLE : Status.FAILED;
+			status = compiled != null && culled != null && overlay != null && layoutMatches() ? Status.AVAILABLE : Status.FAILED;
 			if (status == Status.FAILED) {
 				Inertia.LOGGER.warn("Inertia water shader unavailable; using the simple water rendering");
 			} else {
@@ -127,6 +178,25 @@ public final class WaterPass implements AutoCloseable {
 			}
 		}
 		return status == Status.AVAILABLE;
+	}
+
+	/** Whether {@link #SURFACE_FORMAT} has exactly the offsets the renderer writes. */
+	private static boolean layoutMatches() {
+		var elements = SURFACE_FORMAT.getElements();
+		var attributes = WaterVertexLayout.ATTRIBUTES;
+		int[] offsets = {
+			WaterVertexLayout.POSITION, WaterVertexLayout.VELOCITY, WaterVertexLayout.FOAM_UV,
+			WaterVertexLayout.INFO, WaterVertexLayout.LIGHT, WaterVertexLayout.NORMAL
+		};
+		boolean ok = SURFACE_FORMAT.getVertexSize() == WaterVertexLayout.STRIDE && elements.size() == attributes.size();
+		for (int i = 0; ok && i < elements.size(); i++) {
+			VertexFormatElement element = elements.get(i);
+			ok = element.name().equals(attributes.get(i).name()) && element.offset() == offsets[i];
+		}
+		if (!ok) {
+			Inertia.LOGGER.error("Inertia water vertex format does not match its layout: {}", SURFACE_FORMAT);
+		}
+		return ok;
 	}
 
 	/** "active", "unavailable" or "not checked yet", for /inertia info. */
@@ -144,21 +214,20 @@ public final class WaterPass implements AutoCloseable {
 	}
 
 	/**
-	 * Copies the scene, draws the water quads with the water shader and then the overlays (foam,
-	 * spray) on top. All vertex data uses the {@code ENTITY} format.
+	 * Copies the scene, draws the water surface with the water shader and then the overlays
+	 * (droplets, spray) on top, which use the {@code ENTITY} format.
 	 *
-	 * @param water        water vertex data as produced by a {@code BufferBuilder}
-	 * @param indexCount   number of water indices (6 per quad)
+	 * @param surface      the water surface, or {@code null} for none
 	 * @param overlays     quads drawn after the water, in order
 	 * @param foam         foam map for this frame, or {@code null} without foam
 	 * @param sunDirection world-space direction towards the sun
 	 * @param daylight     0 at night, 1 at noon
-	 * @param cameraWrap   camera world position wrapped to a small range (ripple coordinates)
+	 * @param originOffset the surface's origin relative to the camera
 	 * @param parameters   shader parameters, see {@code water.vsh}
 	 */
 	public void draw(
-		ByteBuffer water, int indexCount, List<Overlay> overlays, SurfaceFoam.Map foam,
-		Vector3f sunDirection, float daylight, Vector3f cameraWrap, Matrix4f parameters
+		Surface surface, List<Overlay> overlays, SurfaceFoam.Map foam,
+		Vector3f sunDirection, float daylight, Vector3f originOffset, Matrix4f parameters
 	) {
 		Minecraft minecraft = Minecraft.getInstance();
 		RenderTarget main = minecraft.gameRenderer.mainRenderTarget();
@@ -176,20 +245,22 @@ public final class WaterPass implements AutoCloseable {
 		encoder.copyTextureToTexture(depth, sceneDepth, 0, 0, 0, 0, 0, width, height);
 		GpuTextureView foamMap = foamView(encoder, foam);
 
-		// Upload all vertex data into one buffer.
-		int waterBytes = water.remaining();
+		// The surface is uploaded only when it changed.
+		boolean drawSurface = surface != null && surface.indexCount() > 0 && surface.vertexCount() > 0;
+		if (drawSurface && surface.serial() != uploadedSurface) {
+			uploadSurface(encoder, surface);
+		}
+
+		// Upload the overlay vertex data into one buffer.
 		long[] overlayOffsets = new long[overlays.size()];
-		long total = align(waterBytes);
-		int maxIndices = indexCount;
+		long total = 0;
+		int maxIndices = 0;
 		for (int i = 0; i < overlays.size(); i++) {
 			overlayOffsets[i] = total;
 			total += align(overlays.get(i).vertices().remaining());
 			maxIndices = Math.max(maxIndices, overlays.get(i).indexCount());
 		}
-		ensureVertexCapacity(total);
-		if (waterBytes > 0) {
-			encoder.writeToBuffer(vertexBuffer.slice(0, waterBytes), water);
-		}
+		ensureVertexCapacity(Math.max(total, ALIGNMENT));
 		for (int i = 0; i < overlays.size(); i++) {
 			ByteBuffer data = overlays.get(i).vertices();
 			int bytes = data.remaining();
@@ -199,19 +270,19 @@ public final class WaterPass implements AutoCloseable {
 		}
 
 		RenderSystem.AutoStorageIndexBuffer quadIndices = RenderSystem.getSequentialBuffer(PrimitiveTopology.QUADS);
-		GpuBuffer indexBuffer = quadIndices.getBuffer(maxIndices);
+		GpuBuffer quadIndexBuffer = quadIndices.getBuffer(Math.max(maxIndices, 6));
 		Matrix4f modelView = RenderSystem.getModelViewMatrixCopy();
 		GpuBufferSlice waterTransforms = RenderSystem.getDynamicUniforms().writeTransform(
 			modelView,
 			new Vector4f(sunDirection.x, sunDirection.y, sunDirection.z, daylight),
-			cameraWrap,
+			originOffset,
 			parameters
 		);
 		GpuBufferSlice overlayTransforms = RenderSystem.getDynamicUniforms().writeTransform(modelView);
 
 		// Resolve every texture before the pass opens: the first lookup of a texture uploads it, and
 		// uploads are not allowed while a render pass is open.
-		AbstractTexture surface = minecraft.getTextureManager().getTexture(SURFACE_TEXTURE);
+		AbstractTexture surfaceTexture = minecraft.getTextureManager().getTexture(SURFACE_TEXTURE);
 		AbstractTexture[] overlayTextures = new AbstractTexture[overlays.size()];
 		for (int i = 0; i < overlays.size(); i++) {
 			overlayTextures[i] = minecraft.getTextureManager().getTexture(overlays.get(i).texture());
@@ -222,22 +293,23 @@ public final class WaterPass implements AutoCloseable {
 			() -> "Inertia water", main.getColorTextureView(), Optional.empty(), main.getDepthTextureView(), OptionalDouble.empty()
 		)) {
 			RenderSystem.bindDefaultUniforms(pass);
-			pass.setIndexBuffer(indexBuffer, quadIndices.type());
 
-			if (indexCount > 0 && waterBytes > 0) {
-				pass.setPipeline(RenderSystem.getCompiledPipeline(PIPELINE));
+			if (drawSurface) {
+				pass.setPipeline(RenderSystem.getCompiledPipeline(surface.cullBackFaces() ? PIPELINE_CULLED : PIPELINE));
 				pass.setUniform("DynamicTransforms", waterTransforms);
-				pass.setUniform("Sampler0", surface.getTextureView(), surface.getSampler());
+				pass.setUniform("Sampler0", surfaceTexture.getTextureView(), surfaceTexture.getSampler());
 				pass.setUniform("Sampler2", minecraft.gameRenderer.lightmap(), samplers.getClampToEdge(FilterMode.LINEAR));
 				pass.setUniform("SceneColor", sceneColorView, samplers.getClampToEdge(FilterMode.LINEAR));
 				pass.setUniform("SceneDepth", sceneDepthView, samplers.getClampToEdge(FilterMode.NEAREST));
 				pass.setUniform("FoamMap", foamMap, samplers.getClampToEdge(FilterMode.LINEAR, true));
-				pass.setVertexBuffer(0, vertexBuffer.slice(0, waterBytes));
-				pass.drawIndexed(indexCount, 1, 0, 0, 0);
+				pass.setVertexBuffer(0, surfaceVertices.slice(0, (long) surface.vertexCount() * WaterVertexLayout.STRIDE));
+				pass.setIndexBuffer(surfaceIndices, IndexType.INT);
+				pass.drawIndexed(surface.indexCount(), 1, 0, 0, 0);
 			}
 
 			if (!overlays.isEmpty()) {
 				pass.setPipeline(RenderSystem.getCompiledPipeline(OVERLAY_PIPELINE));
+				pass.setIndexBuffer(quadIndexBuffer, quadIndices.type());
 				pass.setUniform("DynamicTransforms", overlayTransforms);
 				pass.setUniform("Sampler1", minecraft.gameRenderer.overlayTexture().getTextureView(), samplers.getClampToEdge(FilterMode.LINEAR));
 				pass.setUniform("Sampler2", minecraft.gameRenderer.lightmap(), samplers.getClampToEdge(FilterMode.LINEAR));
@@ -253,6 +325,30 @@ public final class WaterPass implements AutoCloseable {
 				}
 			}
 		}
+	}
+
+	/** Copies a new surface into the GPU buffers (grown by doubling when too small). */
+	private void uploadSurface(CommandEncoder encoder, Surface surface) {
+		var device = RenderSystem.getDevice();
+		long vertexBytes = (long) surface.vertexCount() * WaterVertexLayout.STRIDE;
+		long indexBytes = (long) surface.indexCount() * Integer.BYTES;
+		if (surfaceVertices == null || surfaceVertices.size() < vertexBytes) {
+			if (surfaceVertices != null) {
+				surfaceVertices.close();
+			}
+			surfaceVertices = device.createBuffer(() -> "Inertia water surface vertices",
+				GpuBuffer.USAGE_VERTEX | GpuBuffer.USAGE_COPY_DST, Math.max(1L << 20, Long.highestOneBit(vertexBytes) << 1));
+		}
+		if (surfaceIndices == null || surfaceIndices.size() < indexBytes) {
+			if (surfaceIndices != null) {
+				surfaceIndices.close();
+			}
+			surfaceIndices = device.createBuffer(() -> "Inertia water surface indices",
+				GpuBuffer.USAGE_INDEX | GpuBuffer.USAGE_COPY_DST, Math.max(1L << 20, Long.highestOneBit(indexBytes) << 1));
+		}
+		encoder.writeToBuffer(surfaceVertices.slice(0, vertexBytes), surface.vertices().duplicate().position(0).limit((int) vertexBytes));
+		encoder.writeToBuffer(surfaceIndices.slice(0, indexBytes), surface.indices().duplicate().position(0).limit((int) indexBytes));
+		uploadedSurface = surface.serial();
 	}
 
 	/** Uploads a new foam map (all mip levels) if it changed; returns the view to bind. */
@@ -354,6 +450,15 @@ public final class WaterPass implements AutoCloseable {
 	public void close() {
 		closeSceneTextures();
 		closeFoamTexture();
+		if (surfaceVertices != null) {
+			surfaceVertices.close();
+			surfaceVertices = null;
+		}
+		if (surfaceIndices != null) {
+			surfaceIndices.close();
+			surfaceIndices = null;
+		}
+		uploadedSurface = Long.MIN_VALUE;
 		if (emptyFoamView != null) {
 			emptyFoamView.close();
 			emptyFoamTexture.close();
