@@ -2,6 +2,7 @@ package io.github.isnowx17.inertia.client.render;
 
 import com.mojang.blaze3d.pipeline.RenderTarget;
 import com.mojang.blaze3d.systems.RenderSystem;
+import com.mojang.renderpearl.api.GpuFormat;
 import com.mojang.renderpearl.api.buffers.GpuBuffer;
 import com.mojang.renderpearl.api.buffers.GpuBufferSlice;
 import com.mojang.renderpearl.api.commands.CommandEncoder;
@@ -19,6 +20,7 @@ import com.mojang.renderpearl.api.textures.FilterMode;
 import com.mojang.renderpearl.api.textures.GpuTexture;
 import com.mojang.renderpearl.api.textures.GpuTextureView;
 import io.github.isnowx17.inertia.Inertia;
+import io.github.isnowx17.inertia.util.SurfaceFoam;
 import java.nio.ByteBuffer;
 import java.util.List;
 import java.util.Optional;
@@ -39,7 +41,8 @@ import org.joml.Vector4f;
  * <p>Right before drawing, the colour and depth of the finished scene are copied into textures the
  * shader samples: that is what makes refraction and depth-dependent absorption possible (the water
  * cannot read the target it is drawing into). Drawing outside the main pass keeps the copy legal on
- * both the OpenGL and the Vulkan backend.
+ * both the OpenGL and the Vulkan backend. The foam map is uploaded at the same point, with all its
+ * mip levels.
  *
  * <p>If the shader fails to compile on a machine, {@link #isAvailable()} turns false and the
  * renderer falls back to the vanilla entity pipeline.
@@ -48,6 +51,7 @@ public final class WaterPass implements AutoCloseable {
 	private static final BindGroupLayout SCENE_SAMPLERS = BindGroupLayout.builder()
 		.withUniform("SceneColor", UniformType.COMBINED_IMAGE_SAMPLER)
 		.withUniform("SceneDepth", UniformType.COMBINED_IMAGE_SAMPLER)
+		.withUniform("FoamMap", UniformType.COMBINED_IMAGE_SAMPLER)
 		.build();
 
 	public static final RenderPipeline PIPELINE = RenderPipeline.builder(RenderPipelines.ENTITY_SNIPPET)
@@ -90,6 +94,13 @@ public final class WaterPass implements AutoCloseable {
 	private GpuTexture sceneDepth;
 	private GpuTextureView sceneDepthView;
 	private GpuBuffer vertexBuffer;
+	private GpuTexture foamTexture;
+	private GpuTextureView foamView;
+	private SurfaceFoam.Map uploadedFoam;
+	private long uploadedFoamVersion;
+	private ByteBuffer foamUpload;
+	private GpuTexture emptyFoamTexture;
+	private GpuTextureView emptyFoamView;
 
 	/** Registers the pipeline so it is compiled with the other shaders on every resource reload. */
 	public static void register() {
@@ -139,13 +150,14 @@ public final class WaterPass implements AutoCloseable {
 	 * @param water        water vertex data as produced by a {@code BufferBuilder}
 	 * @param indexCount   number of water indices (6 per quad)
 	 * @param overlays     quads drawn after the water, in order
+	 * @param foam         foam map for this frame, or {@code null} without foam
 	 * @param sunDirection world-space direction towards the sun
 	 * @param daylight     0 at night, 1 at noon
 	 * @param cameraWrap   camera world position wrapped to a small range (ripple coordinates)
 	 * @param parameters   shader parameters, see {@code water.vsh}
 	 */
 	public void draw(
-		ByteBuffer water, int indexCount, List<Overlay> overlays,
+		ByteBuffer water, int indexCount, List<Overlay> overlays, SurfaceFoam.Map foam,
 		Vector3f sunDirection, float daylight, Vector3f cameraWrap, Matrix4f parameters
 	) {
 		Minecraft minecraft = Minecraft.getInstance();
@@ -162,6 +174,7 @@ public final class WaterPass implements AutoCloseable {
 		int height = color.getHeight(0);
 		encoder.copyTextureToTexture(color, sceneColor, 0, 0, 0, 0, 0, width, height);
 		encoder.copyTextureToTexture(depth, sceneDepth, 0, 0, 0, 0, 0, width, height);
+		GpuTextureView foamMap = foamView(encoder, foam);
 
 		// Upload all vertex data into one buffer.
 		int waterBytes = water.remaining();
@@ -218,6 +231,7 @@ public final class WaterPass implements AutoCloseable {
 				pass.setUniform("Sampler2", minecraft.gameRenderer.lightmap(), samplers.getClampToEdge(FilterMode.LINEAR));
 				pass.setUniform("SceneColor", sceneColorView, samplers.getClampToEdge(FilterMode.LINEAR));
 				pass.setUniform("SceneDepth", sceneDepthView, samplers.getClampToEdge(FilterMode.NEAREST));
+				pass.setUniform("FoamMap", foamMap, samplers.getClampToEdge(FilterMode.LINEAR, true));
 				pass.setVertexBuffer(0, vertexBuffer.slice(0, waterBytes));
 				pass.drawIndexed(indexCount, 1, 0, 0, 0);
 			}
@@ -239,6 +253,56 @@ public final class WaterPass implements AutoCloseable {
 				}
 			}
 		}
+	}
+
+	/** Uploads a new foam map (all mip levels) if it changed; returns the view to bind. */
+	private GpuTextureView foamView(CommandEncoder encoder, SurfaceFoam.Map map) {
+		var device = RenderSystem.getDevice();
+		if (map == null || map.empty) {
+			if (emptyFoamTexture == null) {
+				int usage = GpuTexture.USAGE_COPY_DST | GpuTexture.USAGE_TEXTURE_BINDING;
+				emptyFoamTexture = device.createTexture("Inertia empty foam", usage, GpuFormat.RG8_UNORM, 4, 4, 1, 1);
+				emptyFoamView = device.createTextureView(emptyFoamTexture);
+				ByteBuffer zeros = ByteBuffer.allocateDirect(4 * 4 * 2);
+				encoder.writeToTexture(emptyFoamTexture, zeros, 0, 0, 0, 0, 4, 4);
+			}
+			return emptyFoamView;
+		}
+		if (foamTexture == null || foamTexture.getWidth(0) != map.width || foamTexture.getHeight(0) != map.height
+			|| foamTexture.getMipLevels() != map.levels) {
+			closeFoamTexture();
+			int usage = GpuTexture.USAGE_COPY_DST | GpuTexture.USAGE_TEXTURE_BINDING;
+			foamTexture = device.createTexture("Inertia foam", usage, GpuFormat.RG8_UNORM, map.width, map.height, 1, map.levels);
+			foamView = device.createTextureView(foamTexture, 0, map.levels);
+			uploadedFoam = null;
+		}
+		if (uploadedFoam != map || uploadedFoamVersion != map.version) {
+			for (int level = 0; level < map.levels; level++) {
+				int w = map.width >> level;
+				int h = map.height >> level;
+				int bytes = w * h * 2;
+				if (foamUpload == null || foamUpload.capacity() < bytes) {
+					foamUpload = ByteBuffer.allocateDirect(Math.max(bytes, 1 << 16));
+				}
+				foamUpload.clear();
+				foamUpload.put(map.data, map.offsets[level], bytes);
+				foamUpload.flip();
+				encoder.writeToTexture(foamTexture, foamUpload, level, 0, 0, 0, w, h);
+			}
+			uploadedFoam = map;
+			uploadedFoamVersion = map.version;
+		}
+		return foamView;
+	}
+
+	private void closeFoamTexture() {
+		if (foamView != null) {
+			foamView.close();
+			foamTexture.close();
+		}
+		foamView = null;
+		foamTexture = null;
+		uploadedFoam = null;
 	}
 
 	private static long align(long bytes) {
@@ -289,6 +353,13 @@ public final class WaterPass implements AutoCloseable {
 	@Override
 	public void close() {
 		closeSceneTextures();
+		closeFoamTexture();
+		if (emptyFoamView != null) {
+			emptyFoamView.close();
+			emptyFoamTexture.close();
+			emptyFoamView = null;
+			emptyFoamTexture = null;
+		}
 		if (vertexBuffer != null) {
 			vertexBuffer.close();
 			vertexBuffer = null;

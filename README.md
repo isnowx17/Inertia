@@ -59,13 +59,13 @@ bucket are unchanged. The water is not saved: it disappears when you leave the w
 | `renderMode` | `surface` | `surface`: one continuous water surface. `particles`: every particle as a sphere. |
 | `surfaceSmoothness` | 2.0 | Surface smoothing radius relative to the surface cell size. |
 | `surfaceThreshold` | 0.3 | Surface level as a fraction of still-water density. |
-| `renderScale` | 1.6 | Size of spray droplets and foam relative to the particle spacing. |
+| `renderScale` | 1.6 | Size of spray droplets relative to the particle spacing. |
 | `renderOpacity` | 0.6 | Opacity of the water when looking straight into it. |
-| `foam` | true | Simulate and draw foam, spray and bubbles. |
+| `foam` | true | Simulate and draw foam and spray. |
 | `foamAmount` | 0.35 | How easily foam forms, 0–1. |
-| `foamLifetime` | 3.0 | Seconds foam lives. |
-| `foamSize` | 1.0 | Size of the foam splats; bigger splats cover more surface. |
-| `foamCoverage` | 1.2 | How quickly overlapping foam covers the surface. |
+| `foamLifetime` | 3.0 | Average seconds foam lives (single bits live 0.8 to 2.3 times this). |
+| `foamSize` | 1.0 | Width of the foam lines. |
+| `foamCoverage` | 1.0 | How quickly overlapping foam turns opaque white. |
 | `waterFriction` | 0.3 | Friction against blocks; higher makes water pool instead of sliding away. |
 | `waterDamping` | 0.05 | Velocity damping. |
 | `waterViscosity` | 0.01 | Viscosity; very high values feel like honey. |
@@ -125,10 +125,14 @@ jars, creates the tag `v<version>` and publishes the release.
   depths), screen-space reflections of the surroundings, caustics on the ground below, Fresnel
   sky reflection and a sun glint. It is registered as an optional pipeline, so a
   compile failure only switches back to the simple rendering.
-- **Foam:** PhysX diffuse particles (foam, spray, bubbles) spawn where the water splashes or
-  churns. Foam on the surface is drawn the way [Realistic Water](https://github.com/sskaffy/Realistic-Water)
-  by Skaffy draws it: the foam particles add up to a foam amount, which becomes coverage and is
-  broken up by a fine lace of bubble walls. Spray is drawn as small soft flecks.
+- **Foam:** up to 150,000 small foam tracers (40,000 to 250,000 depending on `quality`) float
+  on the top surface. They are spawned where the water churns (fast flow, and where PhysX spawns
+  fresh diffuse particles at the surface), drift with the surface flow, are stirred by small eddies
+  and pushed aside by boils (upwellings that sweep foam outwards, so it gathers into lines and
+  rings), and fade after a few seconds. Stretched and folded by the flow they form swirling foam
+  lines and patches. Every surface rebuild splats them into a top-down foam map (about 4 cm per
+  texel, with mip levels) that the water shader samples; up close the foam breaks up into fine
+  bubbles. Spray just above the water is drawn as small soft flecks.
 - **Threads:** the GPU step runs on a physics thread, the surface is meshed on a worker pool, and
   the game thread only collects results and draws.
 
@@ -145,10 +149,3 @@ Ayrıntılar için [PLAN.md](PLAN.md).
 
 Inertia is licensed under the [GNU AGPL-3.0](LICENSE). It bundles physx-jni (MIT) and NVIDIA
 PhysX (BSD-3-Clause).
-
-## Credits
-
-The foam rendering (coverage curve and foam lace, in
-`src/client/resources/assets/inertia/shaders/core/water.fsh`) is adapted from
-[Realistic Water](https://github.com/sskaffy/Realistic-Water) by **Skaffy** and used with the
-author's permission. Realistic Water itself is a separate mod with its own license.

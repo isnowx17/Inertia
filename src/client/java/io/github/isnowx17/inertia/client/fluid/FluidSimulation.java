@@ -823,6 +823,11 @@ public final class FluidSimulation implements AutoCloseable {
 		return params;
 	}
 
+	/** Number of game ticks simulated so far. */
+	public long tickCount() {
+		return tick;
+	}
+
 	public int originX() {
 		return originX;
 	}

@@ -218,51 +218,6 @@ class FluidSurfaceMesherTest {
 	}
 
 	@Test
-	void foamOnTheSurfaceReachesNearbyVerticesOnly() {
-		int n = 8;
-		float[] p = new float[n * n * n * 3];
-		int i = 0;
-		for (int x = 0; x < n; x++) {
-			for (int y = 0; y < n; y++) {
-				for (int z = 0; z < n; z++) {
-					p[i++] = (x + 0.5f) * SPACING;
-					p[i++] = (y + 0.5f) * SPACING;
-					p[i++] = (z + 0.5f) * SPACING;
-				}
-			}
-		}
-		// One foam particle floating on the top surface near x = z = 0.25, and one far away in the air.
-		float[] foam = {0.25f, 1.02f, 0.25f, 3f, 0.5f, 6f, 0.5f, 3f};
-		// Same threshold convention as the game: a fraction of the density of still water.
-		float radius = SPACING * 3f;
-		FluidSurfaceMesher game = new FluidSurfaceMesher(SPACING, radius, 0.3f * FluidSurfaceMesher.restDensity(SPACING, radius));
-		FluidSurfaceMesher.Mesh mesh = game.mesh(p, null, n * n * n, foam, 2, null);
-
-		float near = 0f;
-		float far = 0f;
-		for (int v = 0; v < mesh.vertexCount; v++) {
-			float f = mesh.vertices[v * FluidSurfaceMesher.VERTEX_STRIDE + 10];
-			assertTrue(f >= 0f && Float.isFinite(f));
-			float dx = vx(mesh, v) - 0.25f;
-			float dz = vz(mesh, v) - 0.25f;
-			if (vy(mesh, v) > 0.8f && dx * dx + dz * dz < 0.04f) {
-				near = Math.max(near, f);
-			}
-			if (vx(mesh, v) > 0.9f && vz(mesh, v) > 0.9f) {
-				far = Math.max(far, f);
-			}
-		}
-		// One particle spread over its splat area (about 0.13 square blocks here): several per block².
-		assertTrue(near > 1f, "no foam next to the foam particle: " + near);
-		assertEquals(0f, far, 1e-6f);
-
-		FluidSurfaceMesher.Mesh clean = game.mesh(p, null, n * n * n, null);
-		for (int v = 0; v < clean.vertexCount; v++) {
-			assertEquals(0f, clean.vertices[v * FluidSurfaceMesher.VERTEX_STRIDE + 10]);
-		}
-	}
-
-	@Test
 	void restDensityGrowsWithKernelRadius() {
 		float small = FluidSurfaceMesher.restDensity(SPACING, SPACING * 2f);
 		float large = FluidSurfaceMesher.restDensity(SPACING, SPACING * 3f);

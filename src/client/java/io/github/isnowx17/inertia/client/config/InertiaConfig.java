@@ -21,7 +21,7 @@ public final class InertiaConfig {
 	public static final String RENDER_SURFACE = "surface";
 	public static final String RENDER_PARTICLES = "particles";
 	public static final String QUALITY_CUSTOM = "custom";
-	private static final int CURRENT_VERSION = 7;
+	private static final int CURRENT_VERSION = 8;
 
 	/** Version of this file's defaults; older files get changed defaults migrated on load. */
 	public int configVersion = 0;
@@ -109,23 +109,23 @@ public final class InertiaConfig {
 	/** Opacity of the water when looking straight into it, 0..1. */
 	public float renderOpacity = 0.6f;
 
-	// Foam: PhysX spawns foam, spray and bubble particles where the water splashes and churns.
-	// Foam on the surface is drawn like Realistic Water by Skaffy (coverage and foam lace).
+	// Foam: forms where the water churns (fast flow, splashes; PhysX spawns spray and bubbles there
+	// too), drifts with the surface flow and gathers into lines and rings before it fades.
 
-	/** Whether foam, spray and bubbles are simulated and drawn. */
+	/** Whether foam and spray are simulated and drawn. */
 	public boolean foam = true;
 
 	/** How easily foam forms, 0..1. */
 	public float foamAmount = 0.35f;
 
-	/** How long foam lives in seconds. */
+	/** How long foam lives in seconds (on average; single bits of foam live 0.8 to 2.3 times this). */
 	public float foamLifetime = 3.0f;
 
-	/** Size of a foam splat relative to the default; bigger splats cover more surface. */
+	/** Width of the foam lines relative to the default. */
 	public float foamSize = 1.0f;
 
-	/** How quickly overlapping foam covers the surface (Realistic Water's "foam coverage"). */
-	public float foamCoverage = 1.2f;
+	/** How quickly overlapping foam turns opaque white, relative to the default. */
+	public float foamCoverage = 1.0f;
 
 	// Water material (PhysX PBD). Change carefully: extreme values make the simulation unstable.
 
@@ -231,6 +231,13 @@ public final class InertiaConfig {
 			// 0.5.0: foam is back, drawn like Realistic Water.
 			foam = true;
 		}
+		if (configVersion < 8) {
+			// 0.6.0: new foam made of tracers drifting with the flow; foamCoverage and foamSize changed meaning.
+			foam = true;
+			if (foamCoverage == 1.2f) {
+				foamCoverage = 1.0f;
+			}
+		}
 		configVersion = CURRENT_VERSION;
 	}
 
@@ -263,7 +270,7 @@ public final class InertiaConfig {
 		foamAmount = clamp(orDefault(foamAmount, 0.35f), 0f, 1f);
 		foamLifetime = clamp(orDefault(foamLifetime, 3f), 0.2f, 10f);
 		foamSize = clamp(orDefault(foamSize, 1f), 0.25f, 4f);
-		foamCoverage = clamp(orDefault(foamCoverage, 1.2f), 0f, 5f);
+		foamCoverage = clamp(orDefault(foamCoverage, 1f), 0.1f, 5f);
 		waterFriction = clamp(orDefault(waterFriction, 0.3f), 0f, 1f);
 		waterDamping = clamp(orDefault(waterDamping, 0.05f), 0f, 1f);
 		waterViscosity = clamp(orDefault(waterViscosity, 0.01f), 0f, 1f);

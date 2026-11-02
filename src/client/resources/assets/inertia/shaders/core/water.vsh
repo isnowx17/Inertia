@@ -11,8 +11,10 @@
 //                    column 1: deep water colour (rgb), shoreline softness (w)
 //                    column 2: sky colour (rgb), 1 if the sky colour is valid (w)
 //                    column 3: reflections on (x), caustics strength (y), sun strength (z),
-//                              foam coverage (w, 0 = no foam)
-// Per-vertex: Color = biome water colour + base opacity, UV0 = (foam alpha, fallback thickness).
+//                              foam on (w)
+// Per-vertex: Color = biome water colour (rgb) and the vertex height in the foam map's height code
+// (a), UV0 = position in the foam map, UV1.x = water thickness in 1/1024 blocks (used where the
+// depth copy cannot measure it).
 
 #include <minecraft:light.glsl>
 #include <minecraft:fog.glsl>
@@ -35,8 +37,9 @@ layout(location = 2) out vec4 vertexColor;
 layout(location = 3) out vec4 lightMapColor;
 layout(location = 4) out vec3 relativePosition;
 layout(location = 5) out vec3 surfaceNormal;
-layout(location = 6) out vec2 surfaceParams;
+layout(location = 6) out vec2 foamUv;
 layout(location = 7) out float diffuseLight;
+layout(location = 8) out vec2 surfaceInfo;
 
 void main() {
     gl_Position = ProjMat * ModelViewMat * vec4(Position, 1.0);
@@ -44,11 +47,13 @@ void main() {
     sphericalVertexDistance = fog_spherical_distance(Position);
     cylindricalVertexDistance = fog_cylindrical_distance(Position);
 
-    vertexColor = Color;
+    vertexColor = vec4(Color.rgb, 1.0);
     lightMapColor = sample_lightmap(Sampler2, UV2);
     relativePosition = Position;
     surfaceNormal = Normal;
-    surfaceParams = UV0;
+    foamUv = UV0;
+    // x: fallback water thickness in blocks; y: height of this vertex in the foam map's height code.
+    surfaceInfo = vec2(float(UV1.x) / 1024.0, Color.a * 255.0);
 
     vec2 light = minecraft_compute_light(Light0_Direction, Light1_Direction, Normal);
     diffuseLight = min(1.0, (max(light.x, 0.0) + max(light.y, 0.0)) * MINECRAFT_LIGHT_POWER + MINECRAFT_AMBIENT_LIGHT);
