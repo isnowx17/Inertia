@@ -100,7 +100,7 @@ public final class FluidParticleRenderer {
 			.setNormal(pose, normal.x, normal.y, normal.z);
 	}
 
-	/** Computes camera-relative interpolated positions, colours and light for every particle. */
+	/** Computes camera-relative positions (moved along their velocity into the tick), colours and light. */
 	private void prepare(FluidSimulation sim, ClientLevel level, Vec3 cameraPos, float partialTick) {
 		int count = sim.activeCount();
 		if (vertexData.length < count * 3) {
@@ -109,9 +109,11 @@ public final class FluidParticleRenderer {
 			lightData = new int[count];
 		}
 
-		float[] prev = sim.previousPositions();
 		float[] curr = sim.currentPositions();
 		float[] vel = sim.velocities();
+		int stride = FluidSimulation.STRIDE;
+		// The positions are from the end of the latest step; move them on by the time since the tick.
+		float dt = partialTick / 20f;
 		double offX = sim.originX() - cameraPos.x;
 		double offY = sim.originY() - cameraPos.y;
 		double offZ = sim.originZ() - cameraPos.z;
@@ -122,9 +124,12 @@ public final class FluidParticleRenderer {
 		lightCache.clear();
 
 		for (int i = 0; i < count; i++) {
-			float px = Mth.lerp(partialTick, prev[i * 3], curr[i * 3]);
-			float py = Mth.lerp(partialTick, prev[i * 3 + 1], curr[i * 3 + 1]);
-			float pz = Mth.lerp(partialTick, prev[i * 3 + 2], curr[i * 3 + 2]);
+			float vx = vel[i * stride];
+			float vy = vel[i * stride + 1];
+			float vz = vel[i * stride + 2];
+			float px = curr[i * stride] + vx * dt;
+			float py = curr[i * stride + 1] + vy * dt;
+			float pz = curr[i * stride + 2] + vz * dt;
 			vertexData[i * 3] = (float) (px + offX);
 			vertexData[i * 3 + 1] = (float) (py + offY);
 			vertexData[i * 3 + 2] = (float) (pz + offZ);
@@ -142,9 +147,6 @@ public final class FluidParticleRenderer {
 			}
 			lightData[i] = light;
 
-			float vx = vel[i * 3];
-			float vy = vel[i * 3 + 1];
-			float vz = vel[i * 3 + 2];
 			float foam = Mth.clamp(Mth.sqrt(vx * vx + vy * vy + vz * vz) / FOAM_SPEED, 0f, 1f);
 			colorData[i] = (alpha << 24) | lerpRgb(waterColor, FOAM_COLOR, foam * 0.7f);
 		}

@@ -79,3 +79,16 @@ Kurallar:
 - Sürüm numarası tek bir yerde tutulur: `gradle.properties` (`mod_version`).
 - Jar adı: `inertia-<sürüm>+<minecraft sürümü>-<platform>.jar` (ör. `inertia-0.1.0+26.3-windows.jar`).
 - Her sürümün değişiklikleri `CHANGELOG.md` dosyasına yazılır.
+
+## 6. Sonraki sürümler
+
+- **0.2.0 (0.3.0 ile yayınlandı):** Daha ince detay (kalite seviyeleri: low / medium / high / ultra, daha ince yüzey ızgarası, çok çekirdekli yüzey hesabı, akışla taşınan yüzey) ve köpük çizgileri (PhysX diffuse parçacıkları: köpük, sıçrama, kabarcık; akış yönünde uzayan köpük izleri).
+- **0.3.0 (yayınlandı):** Akan su kovası (sürekli su kaynağı), otomatik büyüyen parçacık tamponu (pratikte sınırsız, `particleLimit`), ekran uzayı yansımaları, kostikler; kendi su shader'ı (kırılma, piksel bazında derinliğe göre renk ve berraklık, dalgacıklar, gökyüzü yansıması, güneş parlaması); basit çizimde de köşe noktası bazında derinlik rengi; varsayılan kalite `high`.
+- **0.4.0 (yayınlandı):** Performans (fizik adımı ayrı thread'de, yüzey güncellemesi sınırlı) ve suyun üstüne yatan, akışla uzayan köpük çizgileri; shader'da mermer köpük deseni.
+- **0.4.5 (yayınlandı):** Köpük kaldırıldı (shader deseni, hızlı suda beyazlaşma, yüzey köpüğü); sıçrama tanecikleri varsayılan olarak kapalı.
+- **0.5.0 (yayınlandı):** Yeni köpük: Skaffy'nin Realistic Water modundan (izinle) uyarlandı; köpük miktarı → kaplama eğrisi ve kabarcık ağı (foam lace).
+- **0.6.0 (yayınlandı):** Tamamen yeni köpük: yüzeyde akıntıyla sürüklenen, girdaplar ve kaynamalarla (boil) çizgi ve halkalara toplanan köpük taneleri; ince köpük haritası (≈4 cm), yakından kabarcık dokusu.
+- **0.6.1 (yayınlandı):** Varsayılan kalite `ultra` (eski varsayılan `high` olan ayar dosyaları da `ultra`'ya geçer).
+- **1.0.0 (yayınlandı):** Büyük performans güncellemesi: yüzey oluşturma 3-7 kat hızlı (8 düğüme dağıtım + ayrılabilir bulanıklaştırma, derin blokları atlama), su yüzeyi GPU'da kalıcı (kare başına CPU işi yok, köşe shader'ında akışla kaydırma), dışarıdan bakınca iç yüzler çizilmiyor, fizik thread'inde toplu okuma ve tarama, kopyasız dizi paylaşımı.
+- **1.1.0 (yayınlandı):** Akan su kovası Minecraft su kovası gibi: kaynak tıklanan yüzün önündeki bloğa konur, o bloğu sürekli suyla dolu tutar, su aşağı (yer yoksa yanlara) akar; kaynağın bloğuna blok koyunca durur.
+- **Aday:** Suda yüzen cisimler (tekne, eşya) — v1 planında "olmayacaklar" listesindeydi, kullanıcı onayıyla ele alınacak.

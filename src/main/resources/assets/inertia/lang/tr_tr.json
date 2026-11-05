@@ -4,10 +4,17 @@
   "message.inertia.unavailable": "Inertia: sıvı fiziği bu bilgisayarda kullanılamıyor",
   "message.inertia.unavailable_detail": "Inertia: sıvı fiziği devre dışı (%s). Güncel sürücülü bir NVIDIA ekran kartı gerekiyor.",
   "message.inertia.singleplayer_only": "Inertia: sıvı fiziği sadece tek oyunculu modda çalışır",
-  "message.inertia.limit_reached": "Inertia: parçacık sınırına ulaşıldı (%s). /inertia clear kullan ya da config/inertia.json içinde maxParticles değerini artır",
+  "message.inertia.limit_reached": "Inertia: parçacık sınırına ulaşıldı (%s). /inertia clear kullan ya da config/inertia.json içinde particleLimit değerini artır",
   "message.inertia.failed": "Inertia: sıvı simülasyonu bir hata yüzünden durdu. Ayrıntılar log dosyasında.",
+  "command.inertia.info.quality": "Kalite: %s, su shader'ı: %s",
   "command.inertia.info.physx": "PhysX: %s (%s)",
   "command.inertia.info.idle": "Sıvı simülasyonu: çalışmıyor",
-  "command.inertia.info.simulation": "Sıvı simülasyonu: %s / %s parçacık, %s çarpışma bölümü, tick başına %s ms",
-  "command.inertia.clear": "%s su parçacığı silindi"
+  "command.inertia.info.simulation": "Sıvı simülasyonu: %s / %s parçacık, %s köpük parçacığı, %s çarpışma bölümü, tick başına %s ms",
+  "command.inertia.clear": "%s su parçacığı silindi",
+  "item.inertia.fluid_source": "PhysX Akan Su Kovası",
+  "message.inertia.source_added": "Inertia: su kaynağı açıldı (%s aktif)",
+  "message.inertia.source_removed": "Inertia: su kaynağı kapatıldı (%s aktif)",
+  "message.inertia.sources_cleared": "Inertia: tüm su kaynakları kapatıldı",
+  "message.inertia.source_limit": "Inertia: en fazla %s su kaynağı olabilir",
+  "message.inertia.source_blocked": "Inertia: orada bir blok var"
 }

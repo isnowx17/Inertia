@@ -24,6 +24,12 @@ public final class FluidManager {
 	private boolean failed;
 	private boolean warnedThisSession;
 	private double playerSubmersion;
+	private final java.util.List<Source> sources = new java.util.ArrayList<>();
+	private long lastSourceToggle = Long.MIN_VALUE / 2;
+	private static final int MAX_SOURCES = 16;
+	/** Ticks between two source toggles, so holding right-click does not flip a source on and off. */
+	private static final long SOURCE_TOGGLE_COOLDOWN = 15;
+	private java.util.function.Supplier<String> waterShaderStatus = () -> "off";
 
 	public FluidManager(InertiaConfig config) {
 		this.config = config;
@@ -35,6 +41,15 @@ public final class FluidManager {
 
 	public InertiaConfig config() {
 		return config;
+	}
+
+	public void setWaterShaderStatus(java.util.function.Supplier<String> status) {
+		this.waterShaderStatus = status;
+	}
+
+	/** Water shader state for /inertia info. */
+	public String waterShaderStatus() {
+		return config.waterShader ? waterShaderStatus.get() : "off";
 	}
 
 	public double playerSubmersion() {
@@ -71,6 +86,19 @@ public final class FluidManager {
 		}
 
 		try {
+			// A block placed into a source stops it, like filling in a water source block.
+			sources.removeIf(source -> !isOpen(current, source.cell()));
+			long[] cells = new long[sources.size()];
+			// Water further away than the despawn distance would be removed again right away.
+			double reach = Math.max(0, config.despawnDistance - 2);
+			for (int i = 0; i < cells.length; i++) {
+				Source source = sources.get(i);
+				if (Vec3.atCenterOf(source.cell()).distanceToSqr(client.player.position()) < reach * reach) {
+					simulation.fillSource(source.cell(), config.sourceFlow);
+				}
+				cells[i] = source.cell().asLong();
+			}
+			simulation.setSources(cells);
 			simulation.tick(current, client.player);
 			playerSubmersion = config.playerInteraction ? PlayerFluidInteraction.apply(simulation, client.player) : 0;
 		} catch (Throwable t) {
@@ -80,6 +108,75 @@ public final class FluidManager {
 
 	/** Handler for {@link io.github.isnowx17.inertia.item.FluidBucketItem}. */
 	public boolean releaseWater(Player player, Vec3 center, Vec3 velocity) {
+		if (!ensureSimulation(player)) {
+			return false;
+		}
+		try {
+			int added = simulation.spawnBlock(center, velocity);
+			if (added == 0) {
+				player.sendOverlayMessage(Component.translatable("message.inertia.limit_reached", simulation.limit()).withStyle(ChatFormatting.YELLOW));
+				return false;
+			}
+			return true;
+		} catch (Throwable t) {
+			handleFailure(player, t);
+			return false;
+		}
+	}
+
+	/**
+	 * Handler for {@link io.github.isnowx17.inertia.item.FluidSourceItem}: places a flowing source in
+	 * a block (like placing a water source block), or removes the source already there.
+	 */
+	public boolean toggleSource(Player player, BlockPos cell, boolean stopAll) {
+		long now = player.level().getGameTime();
+		if (now - lastSourceToggle < SOURCE_TOGGLE_COOLDOWN) {
+			return false; // holding right-click repeats the use; only react to separate clicks
+		}
+		lastSourceToggle = now;
+
+		if (stopAll) {
+			sources.clear();
+			player.sendOverlayMessage(Component.translatable("message.inertia.sources_cleared"));
+			return true;
+		}
+		if (cell == null) {
+			return false;
+		}
+		for (int i = 0; i < sources.size(); i++) {
+			if (sources.get(i).cell().equals(cell)) {
+				sources.remove(i);
+				player.sendOverlayMessage(Component.translatable("message.inertia.source_removed", sources.size()));
+				return true;
+			}
+		}
+		if (!isOpen(player.level(), cell)) {
+			player.sendOverlayMessage(Component.translatable("message.inertia.source_blocked").withStyle(ChatFormatting.YELLOW));
+			return false;
+		}
+		if (sources.size() >= MAX_SOURCES) {
+			player.sendOverlayMessage(Component.translatable("message.inertia.source_limit", MAX_SOURCES).withStyle(ChatFormatting.YELLOW));
+			return false;
+		}
+		if (!ensureSimulation(player)) {
+			return false;
+		}
+		sources.add(new Source(cell.immutable()));
+		player.sendOverlayMessage(Component.translatable("message.inertia.source_added", sources.size()));
+		return true;
+	}
+
+	/** Whether water can be in a block: nothing there to collide with. */
+	private static boolean isOpen(net.minecraft.world.level.Level level, BlockPos cell) {
+		return level.getBlockState(cell).getCollisionShape(level, cell).isEmpty();
+	}
+
+	/** A flowing water source: a block that is kept full of water, which flows out of it. */
+	private record Source(BlockPos cell) {
+	}
+
+	/** Checks that the GPU simulation can run and creates it on first use. */
+	private boolean ensureSimulation(Player player) {
 		Minecraft client = Minecraft.getInstance();
 		if (!client.hasSingleplayerServer()) {
 			player.sendOverlayMessage(Component.translatable("message.inertia.singleplayer_only").withStyle(ChatFormatting.RED));
@@ -105,27 +202,22 @@ public final class FluidManager {
 			return false;
 		}
 
-		try {
-			if (simulation == null) {
+		if (simulation == null) {
+			try {
 				simulation = new FluidSimulation(config);
 				level = client.level;
 				Inertia.LOGGER.info(
-					"Fluid simulation started: up to {} particles, {} per block",
+					"Fluid simulation started: {} particles (grows up to {}), {} per block",
 					simulation.capacity(),
+					simulation.limit(),
 					simulation.params().particlesPerBlock()
 				);
-			}
-
-			int added = simulation.spawnBlock(center, velocity);
-			if (added == 0) {
-				player.sendOverlayMessage(Component.translatable("message.inertia.limit_reached", simulation.capacity()).withStyle(ChatFormatting.YELLOW));
+			} catch (Throwable t) {
+				handleFailure(player, t);
 				return false;
 			}
-			return true;
-		} catch (Throwable t) {
-			handleFailure(player, t);
-			return false;
 		}
+		return true;
 	}
 
 	public void onBlockChanged(BlockPos pos) {
@@ -142,6 +234,7 @@ public final class FluidManager {
 
 	/** Removes all water. */
 	public int clear() {
+		sources.clear();
 		if (simulation == null) {
 			return 0;
 		}
@@ -171,6 +264,7 @@ public final class FluidManager {
 
 	private void closeSimulation() {
 		playerSubmersion = 0;
+		sources.clear();
 		if (simulation != null) {
 			try {
 				simulation.close();
