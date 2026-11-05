@@ -2,7 +2,7 @@
 
 **Inertia is an advanced, professional physics engine for Minecraft: Java Edition.**
 
-Version 0.1 (beta) adds real-time, GPU-simulated water powered by **NVIDIA PhysX 5**. Pour it
+Inertia adds real-time, GPU-simulated water powered by **NVIDIA PhysX 5**. Pour it
 from a bucket and watch it splash, flow down stairs, pool in holes and push you around.
 
 > **Requirements:** an NVIDIA GPU with a current driver (CUDA), Windows x64 or Linux x64,
@@ -28,7 +28,12 @@ background).
 - Take the **PhysX Water Bucket** from the *Tools & Utilities* creative tab.
 - **Right-click** releases one block of water where you are looking. Hold right-click to keep
   pouring. The bucket never runs empty.
-- `/inertia info` shows the GPU and simulation status, `/inertia clear` removes all water.
+- The **PhysX Flowing Water Bucket** works like a water bucket placing a water source block: the
+  source goes into the block in front of the face you click and keeps that block full of water,
+  which flows out of it, down when there is room below, otherwise out along the ground. Put a block
+  into the source (or click the same place again) to stop it; sneak + click stops all sources.
+- `/inertia info` shows the GPU and simulation status, `/inertia clear` removes all water and
+  stops all sources.
 
 Water simulated by Inertia is separate from vanilla water: oceans, lakes and the normal water
 bucket are unchanged. The water is not saved: it disappears when you leave the world.
@@ -39,17 +44,28 @@ bucket are unchanged. The water is not saved: it disappears when you leave the w
 
 | Setting | Default | Meaning |
 |---|---|---|
-| `maxParticles` | 65536 | Water particles alive at once (4096 – 1048576). |
-| `particleSpacing` | 0.125 | Distance between particles in blocks. 0.125 = 512 particles per block. |
+| `quality` | `ultra` | `low`, `medium`, `high`, `ultra` or `custom`; see below. Lower it for more FPS. |
+| `particleLimit` | 2097152 | Most water particles; the buffer grows up to this as you add water. |
+| `sourceFlow` | 3.0 | Water a flowing source lets out, in blocks of water per second (also its outflow speed). |
 | `despawnDistance` | 96 | Water further away from you than this is removed. |
-| `substepsPerTick` | 3 | Simulation steps per game tick; higher is more stable but slower. |
 | `playerInteraction` | true | Whether water pushes, slows and lifts the player. |
+| `waterShader` | true | Draw the water with Inertia's shader (refraction, depth colour, ripples, sun glints). Falls back automatically if unsupported. |
+| `rippleStrength` | 1.0 | Strength of the surface ripples; 0 = perfectly smooth. |
+| `refractionStrength` | 1.0 | How strongly the water bends what is behind it. |
+| `waterAbsorption` | 1.0 | How quickly light is absorbed; higher makes deep water darker and bluer. |
+| `reflections` | true | Reflect blocks and entities in the water (screen-space reflections). |
+| `caustics` | 1.0 | Strength of the light patterns on the ground under the water; 0 = off. |
+| `sunStrength` | 1.0 | Strength of the sun glint. |
 | `renderMode` | `surface` | `surface`: one continuous water surface. `particles`: every particle as a sphere. |
-| `surfaceResolution` | 1.5 | Surface grid size relative to the spacing; smaller is more detailed but slower. |
-| `surfaceSmoothness` | 3.0 | Surface smoothing radius relative to the spacing. |
+| `surfaceSmoothness` | 2.0 | Surface smoothing radius relative to the surface cell size. |
 | `surfaceThreshold` | 0.3 | Surface level as a fraction of still-water density. |
-| `renderScale` | 1.6 | Size of particles / spray droplets relative to the spacing. |
+| `renderScale` | 1.6 | Size of spray droplets relative to the particle spacing. |
 | `renderOpacity` | 0.6 | Opacity of the water when looking straight into it. |
+| `foam` | true | Simulate and draw foam and spray. |
+| `foamAmount` | 0.35 | How easily foam forms, 0–1. |
+| `foamLifetime` | 3.0 | Average seconds foam lives (single bits live 0.8 to 2.3 times this). |
+| `foamSize` | 1.0 | Width of the foam lines. |
+| `foamCoverage` | 1.0 | How quickly overlapping foam turns opaque white. |
 | `waterFriction` | 0.3 | Friction against blocks; higher makes water pool instead of sliding away. |
 | `waterDamping` | 0.05 | Velocity damping. |
 | `waterViscosity` | 0.01 | Viscosity; very high values feel like honey. |
@@ -57,7 +73,18 @@ bucket are unchanged. The water is not saved: it disappears when you leave the w
 | `waterCohesion` | 0.02 | Cohesion; high values make thin water bead up. |
 | `waterVorticity` | 4 | Keeps swirls alive. |
 
-With the defaults about 128 blocks of water can exist at the same time.
+Quality levels (a bucket is always one block of water; changes apply after restarting the game):
+
+| `quality` | Particles per block | Starting buffer | Surface cell | Sub-steps |
+|---|---|---|---|---|
+| `low` | 512 | 65,536 | 0.19 blocks | 2 |
+| `medium` | 1000 | 131,072 | 0.15 blocks | 3 |
+| `high` | 1728 | 262,144 | 0.125 blocks | 3 |
+| `ultra` | 4096 | 524,288 | 0.1 blocks | 4 |
+| `custom` | from `particleSpacing` | `maxParticles` | `surfaceCellSize` | `substepsPerTick` |
+
+The particle buffer starts at the size above and doubles automatically when you add more water,
+up to `particleLimit`.
 
 ## Building
 
@@ -87,10 +114,35 @@ jars, creates the tag `v<version>` and publishes the release.
   Full blocks are greedily merged into large boxes, partial blocks use their collision boxes.
 - **Player:** a kinematic box keeps the water out of the player; the force of the water on the
   player is computed from the particles around them.
-- **Rendering:** a background thread builds one continuous water surface from the particles
-  (surface nets over a smoothed particle density field) as often as it can; the render thread
-  always draws the newest surface, shaded with Fresnel reflection, biome colour, block light and
-  foam. Isolated splashes are drawn as small droplets.
+- **Physics thread:** after every GPU step the positions and velocities are copied back in one
+  bulk copy each, and the per-particle work of the tick (lost particles, the water around the
+  player, the blocks that need collision geometry) is done right there, off the game thread.
+- **Surface:** for every new simulation result a background job builds one continuous water
+  surface from the particles, in parallel on all spare cores: every particle is spread over the
+  eight surrounding grid nodes, the density is smoothed with a small separable blur, and surface
+  nets extract the surface. Bricks of the grid deep inside a body of water are skipped, and so are
+  bricks the surface cannot cross. The job reads the simulation's arrays without copying them.
+- **Rendering:** the surface stays on the GPU: each new surface is uploaded once (one vertex per
+  surface point, 32-bit indices), and every frame the vertex shader moves the vertices along their
+  flow velocity for the time since the data was taken, so the water flows smoothly between
+  updates and the CPU does no per-frame work for it. Seen from outside the water, the faces turned
+  away from the camera are skipped. Isolated splashes are drawn as small droplets.
+- **Water shader:** after the main level pass the scene colour and depth are copied, then the
+  surface is drawn with Inertia's own shader in a separate render pass: refraction through
+  ripple-distorted lookups, per-pixel absorption from the depth difference (clear shallows, blue
+  depths), screen-space reflections of the surroundings, caustics on the ground below, Fresnel
+  sky reflection and a sun glint. It is registered as an optional pipeline, so a
+  compile failure only switches back to the simple rendering.
+- **Foam:** up to 250,000 small foam tracers at the default `ultra` quality (40,000 at `low`)
+  float on the top surface. They are spawned where the water churns (fast flow, and where PhysX spawns
+  fresh diffuse particles at the surface), drift with the surface flow, are stirred by small eddies
+  and pushed aside by boils (upwellings that sweep foam outwards, so it gathers into lines and
+  rings), and fade after a few seconds. Stretched and folded by the flow they form swirling foam
+  lines and patches. Every surface rebuild splats them into a top-down foam map (about 3 cm per
+  texel at `ultra`, with mip levels) that the water shader samples; up close the foam breaks up into fine
+  bubbles. Spray just above the water is drawn as small soft flecks.
+- **Threads:** the GPU step runs on a physics thread, the surface and the foam are built on a
+  worker pool, and the game thread only collects results and draws.
 
 See [PLAN.md](PLAN.md) for scope and versioning, and [CHANGELOG.md](CHANGELOG.md) for changes.
 

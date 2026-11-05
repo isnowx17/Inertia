@@ -22,6 +22,7 @@ public final class InertiaCommands {
 		dispatcher.register(literal("inertia")
 			.then(literal("info").executes(ctx -> {
 				FabricClientCommandSource source = ctx.getSource();
+				source.sendFeedback(Component.translatable("command.inertia.info.quality", manager.config().quality, manager.waterShaderStatus()));
 				source.sendFeedback(Component.translatable(
 					"command.inertia.info.physx",
 					PhysXRuntime.state().name().toLowerCase(Locale.ROOT),
@@ -34,7 +35,8 @@ public final class InertiaCommands {
 					source.sendFeedback(Component.translatable(
 						"command.inertia.info.simulation",
 						sim.activeCount(),
-						sim.capacity(),
+						sim.limit(),
+						sim.foamCount(),
 						sim.collisionSections(),
 						String.format(Locale.ROOT, "%.2f", sim.lastStepMillis())
 					));

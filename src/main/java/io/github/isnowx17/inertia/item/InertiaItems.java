@@ -19,11 +19,19 @@ public final class InertiaItems {
 		new FluidBucketItem(new Item.Properties().setId(FLUID_BUCKET_KEY).stacksTo(1))
 	);
 
+	public static final ResourceKey<Item> FLUID_SOURCE_KEY = ResourceKey.create(Registries.ITEM, Inertia.id("fluid_source"));
+
+	public static final Item FLUID_SOURCE = Registry.register(
+		BuiltInRegistries.ITEM,
+		FLUID_SOURCE_KEY,
+		new FluidSourceItem(new Item.Properties().setId(FLUID_SOURCE_KEY).stacksTo(1))
+	);
+
 	private InertiaItems() {
 	}
 
 	public static void register() {
 		CreativeModeTabEvents.modifyOutputEvent(CreativeModeTabs.TOOLS_AND_UTILITIES)
-			.register(output -> output.insertAfter(Items.WATER_BUCKET, FLUID_BUCKET));
+			.register(output -> output.insertAfter(Items.WATER_BUCKET, FLUID_BUCKET, FLUID_SOURCE));
 	}
 }

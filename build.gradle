@@ -139,4 +139,6 @@ jar {
 
 test {
 	useJUnitPlatform()
+	// WaterShaderCompileTest reads the shaders straight from the client resources.
+	inputs.dir('src/client/resources/assets/inertia/shaders')
 }
