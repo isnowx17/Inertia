@@ -45,7 +45,8 @@ final class PlayerFluidInteraction {
 		double shellVolume = (box.getXsize() + 2 * margin) * (box.getYsize() + 2 * margin) * (box.getZsize() + 2 * margin)
 			- box.getXsize() * box.getYsize() * box.getZsize();
 		double submersion = Math.min(1.0, inside * sim.params().particleVolume() / shellVolume);
-		if (submersion < MIN_SUBMERSION) {
+		if (submersion < MIN_SUBMERSION || player.isPassenger()) {
+			// A player in a boat or a minecart: the water moves the vehicle (EntityFluidInteraction).
 			return submersion;
 		}
 

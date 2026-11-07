@@ -287,6 +287,18 @@ public final class InertiaBenchmark implements ClientModInitializer {
 			LOGGER.info("WATER t={} active={} frozen={} columns={} stepMs={} limit={} asleep={} fps={}", worldTicks, s.activeCount(),
 				s.frozenParticles(), s.frozenColumns(), String.format(java.util.Locale.ROOT, "%.1f", s.lastStepMillis()), s.atGpuLimit(),
 				s.sleeping(), client.getFps());
+			if (client.level != null) {
+				StringBuilder entities = new StringBuilder();
+				for (net.minecraft.world.entity.Entity e : client.level.entitiesForRendering()) {
+					if (e != client.player) {
+						entities.append(String.format(java.util.Locale.ROOT, " %s@%.2f,%.2f,%.2f", e.getType().builtInRegistryHolder().key().identifier().getPath(),
+							e.getX(), e.getY(), e.getZ()));
+					}
+				}
+				if (!entities.isEmpty()) {
+					LOGGER.info("ENTITIES{}", entities);
+				}
+			}
 		}
 		// The world without any water: the ceiling for everything below.
 		if (worldTicks == 200) {
@@ -341,6 +353,13 @@ public final class InertiaBenchmark implements ClientModInitializer {
 			phase.iterations += sim.currentIterations();
 			phase.limited += sim.atGpuLimit() ? 1 : 0;
 			phase.asleep += sim.sleeping() ? 1 : 0;
+		}
+		if (scene == FILL_ONE && event(14, t, 1100)) {
+			// Things dropped into the water: they should float or sink, and push the water aside.
+			command(client, "summon minecraft:oak_boat -1.5 -47 -1.5");
+			command(client, "summon minecraft:minecart 2.5 -47 -1.5");
+			command(client, "summon minecraft:cow -1.5 -47 2.5");
+			command(client, "summon minecraft:item 2.5 -47 2.5 {Item:{id:\"minecraft:oak_log\",count:1}}");
 		}
 		if (event(10, t, scene.stopSources())) {
 			fluids.toggleSource(client.player, null, true);

@@ -80,6 +80,13 @@ public final class InertiaConfig {
 	public boolean playerInteraction = true;
 
 	/**
+	 * Whether the water and the other entities act on each other: minecarts, boats, animals and
+	 * monsters, items, falling blocks and TNT push the water aside, and the water carries them, makes
+	 * them float (or sink slowly) and softens their fall.
+	 */
+	public boolean entityInteraction = true;
+
+	/**
 	 * How the water is drawn: {@code "surface"} (one continuous water surface, default) or
 	 * {@code "particles"} (every particle as a sphere; cheaper, useful for debugging).
 	 */

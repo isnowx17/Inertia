@@ -60,6 +60,8 @@ public final class FrozenColumns {
 	public static final float RESTLESS_SPEED = 2f;
 	/** Columns within this distance (blocks, horizontally) of the player's box thaw down to below their feet. */
 	static final float PLAYER_REACH = 0.5f;
+	/** Blocks below another entity down to which the water around it thaws. */
+	static final float BODY_DEPTH = 1f;
 	/** Blocks below the player's feet down to which the water around them thaws. */
 	static final float PLAYER_DEPTH = 1.5f;
 	/** Columns this close to a flowing source thaw down to below it. */
@@ -98,6 +100,11 @@ public final class FrozenColumns {
 		public int[] sourceX = new int[0];
 		public int[] sourceY = new int[0];
 		public int[] sourceZ = new int[0];
+		/**
+		 * Other entities in the water (min x, y, z, max x, y, z each): the water around them thaws down
+		 * to below them, like around the player.
+		 */
+		public float[] bodies = new float[0];
 		/** The GPU is at its limit: freeze sooner and keep fewer layers moving. */
 		public boolean tight;
 		/**
@@ -288,6 +295,24 @@ public final class FrozenColumns {
 		return false;
 	}
 
+	/** Box around the frozen water: min x, y, z, max x, y, z; null without any. */
+	public float[] box() {
+		if (columns.isEmpty()) {
+			return null;
+		}
+		float[] b = {Float.POSITIVE_INFINITY, Float.POSITIVE_INFINITY, Float.POSITIVE_INFINITY,
+			Float.NEGATIVE_INFINITY, Float.NEGATIVE_INFINITY, Float.NEGATIVE_INFINITY};
+		for (Column c : columns.values()) {
+			b[0] = Math.min(b[0], c.x);
+			b[1] = Math.min(b[1], c.floor);
+			b[2] = Math.min(b[2], c.z);
+			b[3] = Math.max(b[3], c.x + 1);
+			b[4] = Math.max(b[4], c.top(spacing));
+			b[5] = Math.max(b[5], c.z + 1);
+		}
+		return b;
+	}
+
 	/** Box around the frozen columns: min x, max x (exclusive), min z, max z (exclusive); null without any. */
 	public int[] bounds() {
 		if (columns.isEmpty()) {
@@ -342,6 +367,16 @@ public final class FrozenColumns {
 		}
 		changes.clear();
 
+		for (int b = 0; b + 5 < ctx.bodies.length; b += 6) {
+			for (int x = Mth.floor(ctx.bodies[b] - PLAYER_REACH); x <= Mth.floor(ctx.bodies[b + 3] + PLAYER_REACH); x++) {
+				for (int z = Mth.floor(ctx.bodies[b + 2] - PLAYER_REACH); z <= Mth.floor(ctx.bodies[b + 5] + PLAYER_REACH); z++) {
+					Column c = columns.get(key(x, z));
+					if (c != null) {
+						lower(target, c, layersBelow(c, ctx.bodies[b + 1] - BODY_DEPTH));
+					}
+				}
+			}
+		}
 		if (ctx.player) {
 			int x0 = Mth.floor(ctx.playerMinX - PLAYER_REACH);
 			int x1 = Mth.floor(ctx.playerMaxX + PLAYER_REACH);
@@ -603,6 +638,13 @@ public final class FrozenColumns {
 			return;
 		}
 		int layers = oldLayers + add;
+		// Not up to right below another entity: the water around it thaws down to there.
+		for (int b = 0; b + 5 < ctx.bodies.length; b += 6) {
+			if (x >= Mth.floor(ctx.bodies[b] - PLAYER_REACH) && x <= Mth.floor(ctx.bodies[b + 3] + PLAYER_REACH)
+				&& z >= Mth.floor(ctx.bodies[b + 2] - PLAYER_REACH) && z <= Mth.floor(ctx.bodies[b + 5] + PLAYER_REACH)) {
+				layers = Math.min(layers, (int) Math.floor((ctx.bodies[b + 1] - BODY_DEPTH - spacing - floor) / spacing));
+			}
+		}
 		// Not up to a flowing source: the water around it has to stay free to flow.
 		int margin = SOURCE_COLUMNS + 1;
 		for (int k = 0; k < ctx.sourceX.length; k++) {

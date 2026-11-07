@@ -71,6 +71,61 @@ public final class ParticleScan {
 		public float[] frozenTop;
 		/** How far above the frozen water restless particles count. */
 		public float nearDepth = 0.5f;
+		/**
+		 * Shell boxes around other entities in which the water is measured like around the player (min
+		 * x, y, z, max x, y, z each, relative to the origin), at most {@link #MAX_BODIES}.
+		 */
+		public float[] bodyShells = new float[0];
+		public int bodyCount;
+		/**
+		 * Per column of the grid: one bit per body whose shell reaches into it; {@code null} without a
+		 * grid, then every particle in the box around all shells is tested against every shell.
+		 */
+		public long[] cellBodies;
+		private float bodiesX0;
+		private float bodiesY0;
+		private float bodiesZ0;
+		private float bodiesX1;
+		private float bodiesY1;
+		private float bodiesZ1;
+
+		/** Sets the body shells (see {@link #bodyShells}) and, if the grid is set, which columns they reach. */
+		public void setBodies(float[] shells, int count) {
+			bodyShells = shells;
+			bodyCount = Math.min(count, MAX_BODIES);
+			cellBodies = null;
+			bodiesX0 = Float.POSITIVE_INFINITY;
+			bodiesY0 = Float.POSITIVE_INFINITY;
+			bodiesZ0 = Float.POSITIVE_INFINITY;
+			bodiesX1 = Float.NEGATIVE_INFINITY;
+			bodiesY1 = Float.NEGATIVE_INFINITY;
+			bodiesZ1 = Float.NEGATIVE_INFINITY;
+			for (int b = 0; b < bodyCount; b++) {
+				bodiesX0 = Math.min(bodiesX0, shells[b * 6]);
+				bodiesY0 = Math.min(bodiesY0, shells[b * 6 + 1]);
+				bodiesZ0 = Math.min(bodiesZ0, shells[b * 6 + 2]);
+				bodiesX1 = Math.max(bodiesX1, shells[b * 6 + 3]);
+				bodiesY1 = Math.max(bodiesY1, shells[b * 6 + 4]);
+				bodiesZ1 = Math.max(bodiesZ1, shells[b * 6 + 5]);
+			}
+			if (bodyCount == 0 || gridSizeX <= 0 || gridSizeZ <= 0) {
+				return;
+			}
+			long[] cells = new long[gridSizeX * gridSizeZ];
+			for (int b = 0; b < bodyCount; b++) {
+				int x0 = Math.max(0, Mth.floor(shells[b * 6]) - gridX0);
+				int z0 = Math.max(0, Mth.floor(shells[b * 6 + 2]) - gridZ0);
+				int x1 = Math.min(gridSizeX - 1, Mth.floor(shells[b * 6 + 3]) - gridX0);
+				int z1 = Math.min(gridSizeZ - 1, Mth.floor(shells[b * 6 + 5]) - gridZ0);
+				for (int x = x0; x <= x1; x++) {
+					for (int z = z0; z <= z1; z++) {
+						cells[x * gridSizeZ + z] |= 1L << b;
+					}
+				}
+			}
+			cellBodies = cells;
+		}
+
 		/** Particles at least this fast (squared) count as not calm, and as restless (see {@link Part#colFast}). */
 		public float calmSpeedSq = 0.25f;
 		public float restlessSpeedSq = 4f;
@@ -109,6 +164,9 @@ public final class ParticleScan {
 			return sourceX.length;
 		}
 	}
+
+	/** Most bodies measured in one scan (see {@link Settings#bodyShells}). */
+	public static final int MAX_BODIES = 64;
 
 	/** Highest particles kept per column (see {@link Part#colTop}). */
 	public static final int TOP = 32;
@@ -167,10 +225,15 @@ public final class ParticleScan {
 		/** Per measured column: of the particles listed in {@link #freezing}, the ones not calm and the restless ones. */
 		public int[] colFreezeFast = new int[0];
 		public int[] colFreezeRestless = new int[0];
+		/** Per body ({@link Settings#bodyShells}): the particles in its shell and the sum of their velocities. */
+		public int[] bodyInside = new int[MAX_BODIES];
+		public float[] bodySum = new float[MAX_BODIES * 3];
 		/** Indices of the particles below {@link Settings#freezeBelow} of their column, ascending. */
 		public final IntArrayList freezing = new IntArrayList();
-		/** Box (x and z) around the particles that are not lost. */
+		/** Box around the particles that are not lost. */
 		public float minX;
+		public float minY;
+		public float maxY;
 		public float maxX;
 		public float minZ;
 		public float maxZ;
@@ -219,6 +282,10 @@ public final class ParticleScan {
 			Arrays.fill(colFreezeFast, 0, cells, 0);
 			Arrays.fill(colFreezeRestless, 0, cells, 0);
 			freezing.clear();
+			Arrays.fill(bodyInside, 0);
+			Arrays.fill(bodySum, 0f);
+			minY = Float.POSITIVE_INFINITY;
+			maxY = Float.NEGATIVE_INFINITY;
 			minX = Float.POSITIVE_INFINITY;
 			maxX = Float.NEGATIVE_INFINITY;
 			minZ = Float.POSITIVE_INFINITY;
@@ -300,6 +367,20 @@ public final class ParticleScan {
 		float maxX = Float.NEGATIVE_INFINITY;
 		float minZ = Float.POSITIVE_INFINITY;
 		float maxZ = Float.NEGATIVE_INFINITY;
+		float lowY = Float.POSITIVE_INFINITY;
+		float highY = Float.NEGATIVE_INFINITY;
+		int bodies = s.bodyCount;
+		float[] shells = s.bodyShells;
+		long[] cellBodies = s.cellBodies;
+		long allBodies = bodies >= 64 ? -1L : (1L << bodies) - 1L;
+		float bx0 = s.bodiesX0;
+		float by0 = s.bodiesY0;
+		float bz0 = s.bodiesZ0;
+		float bx1 = s.bodiesX1;
+		float by1 = s.bodiesY1;
+		float bz1 = s.bodiesZ1;
+		int[] bodyInside = out.bodyInside;
+		float[] bodySum = out.bodySum;
 		long lastColumn = Long.MIN_VALUE;
 		int columnRun = 0;
 		// First sampled particle at or after `from`: offset, offset + stride, ...
@@ -340,6 +421,32 @@ public final class ParticleScan {
 			float speedSq = vel[o] * vel[o] + vel[o + 1] * vel[o + 1] + vel[o + 2] * vel[o + 2];
 			if (speedSq >= movingSq) {
 				moving++;
+			}
+			if (y < lowY) {
+				lowY = y;
+			}
+			if (y > highY) {
+				highY = y;
+			}
+			if (bodies > 0 && y >= by0 && y <= by1 && x >= bx0 && x <= bx1 && z >= bz0 && z <= bz1) {
+				long mask = allBodies;
+				if (cellBodies != null) {
+					int gx = Mth.floor(x) - gx0;
+					int gz = Mth.floor(z) - gz0;
+					mask = gx >= 0 && gx < gsx && gz >= 0 && gz < gsz ? cellBodies[gx * gsz + gz] : 0L;
+				}
+				while (mask != 0L) {
+					int b = Long.numberOfTrailingZeros(mask);
+					mask &= mask - 1L;
+					int bo = b * 6;
+					if (x >= shells[bo] && x <= shells[bo + 3] && y >= shells[bo + 1] && y <= shells[bo + 4]
+						&& z >= shells[bo + 2] && z <= shells[bo + 5]) {
+						bodyInside[b]++;
+						bodySum[b * 3] += vel[o];
+						bodySum[b * 3 + 1] += vel[o + 1];
+						bodySum[b * 3 + 2] += vel[o + 2];
+					}
+				}
 			}
 			if (x < minX) {
 				minX = x;
@@ -423,6 +530,8 @@ public final class ParticleScan {
 		}
 		out.moving += moving;
 		out.farthestSq = Math.max(out.farthestSq, farthest);
+		out.minY = Math.min(out.minY, lowY);
+		out.maxY = Math.max(out.maxY, highY);
 		out.minX = Math.min(out.minX, minX);
 		out.maxX = Math.max(out.maxX, maxX);
 		out.minZ = Math.min(out.minZ, minZ);
@@ -489,6 +598,14 @@ public final class ParticleScan {
 		}
 		total.moving += part.moving;
 		total.farthestSq = Math.max(total.farthestSq, part.farthestSq);
+		total.minY = Math.min(total.minY, part.minY);
+		total.maxY = Math.max(total.maxY, part.maxY);
+		for (int b = 0; b < MAX_BODIES; b++) {
+			total.bodyInside[b] += part.bodyInside[b];
+		}
+		for (int k = 0; k < MAX_BODIES * 3; k++) {
+			total.bodySum[k] += part.bodySum[k];
+		}
 		total.minX = Math.min(total.minX, part.minX);
 		total.maxX = Math.max(total.maxX, part.maxX);
 		total.minZ = Math.min(total.minZ, part.minZ);
