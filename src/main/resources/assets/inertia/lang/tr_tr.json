@@ -12,6 +12,7 @@
   "command.inertia.info.idle": "Sıvı simülasyonu: çalışmıyor",
   "command.inertia.info.simulation": "Sıvı simülasyonu: %s / %s parçacık, %s köpük parçacığı, %s çarpışma bölümü, tick başına %s ms",
   "command.inertia.info.solver": "Su çözücüsü: %s alt adım, %s iterasyon, ekran kartı sınırına ulaşıldı: %s, uykuda: %s",
+  "command.inertia.info.frozen": "Hacim olarak tutulan durgun su: %s sütun, %s parçacık kadar su",
   "command.inertia.clear": "%s su parçacığı silindi",
   "item.inertia.fluid_source": "PhysX Akan Su Kovası",
   "message.inertia.source_added": "Inertia: su kaynağı açıldı (%s aktif)",

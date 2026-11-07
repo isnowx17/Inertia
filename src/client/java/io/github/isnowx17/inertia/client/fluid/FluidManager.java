@@ -49,6 +49,12 @@ public final class FluidManager {
 	private final boolean[] steppedTicks = new boolean[RATE_WINDOW];
 	private int steppedTickCount = RATE_WINDOW;
 	private int rateCursor;
+	/**
+	 * At the GPU's limit: room freed for new water and not used yet, and the average room freed per
+	 * tick. The sources pour at that average, so a stream keeps an even thickness.
+	 */
+	private int roomBank;
+	private float roomRate;
 	/** Ticks between two source toggles, so holding right-click does not flip a source on and off. */
 	private static final long SOURCE_TOGGLE_COOLDOWN = 15;
 	private java.util.function.Supplier<String> waterShaderStatus = () -> "off";
@@ -131,6 +137,7 @@ public final class FluidManager {
 	 * soon as the step is done.
 	 */
 	public void onFrame(Minecraft client) {
+		paceFrame(client);
 		if (!tickPending) {
 			return;
 		}
@@ -149,6 +156,47 @@ public final class FluidManager {
 		}
 	}
 
+	private long paceNext;
+	private long refreshCheckedAt;
+	private float refreshRate;
+
+	/**
+	 * While the water needs the GPU ({@link FluidSimulation#wantsFramePacing}), holds the frame rate to
+	 * the screen's refresh rate: frames the screen cannot show only take GPU time from the physics,
+	 * which then has to make room by removing water. Does nothing with vsync or a lower frame limit.
+	 */
+	private void paceFrame(Minecraft client) {
+		if (simulation == null || !simulation.wantsFramePacing() || client.options.enableVsync().get()) {
+			paceNext = 0;
+			return;
+		}
+		long now = System.nanoTime();
+		if (now - refreshCheckedAt > 2_000_000_000L || refreshRate == 0f) {
+			refreshCheckedAt = now;
+			com.mojang.blaze3d.platform.Monitor monitor = client.getWindow().findBestMonitor();
+			float rate = monitor != null ? monitor.currentMode().getRefreshRate() : 0f;
+			refreshRate = rate >= 30f ? Math.min(rate, 360f) : 144f;
+		}
+		int limit = client.getFramerateLimitTracker().getFramerateLimit();
+		if (limit < net.minecraft.client.Options.UNLIMITED_FRAMERATE_CUTOFF && limit <= refreshRate) {
+			paceNext = 0;
+			return;
+		}
+		long frame = (long) (1_000_000_000L / refreshRate);
+		if (paceNext != 0 && now < paceNext) {
+			// Sleep most of the wait, then spin: sleeping alone overshoots by up to a millisecond or two.
+			while (paceNext - now > 1_500_000L) {
+				java.util.concurrent.locks.LockSupport.parkNanos(paceNext - now - 1_000_000L);
+				now = System.nanoTime();
+			}
+			while (now < paceNext) {
+				Thread.onSpinWait();
+				now = System.nanoTime();
+			}
+		}
+		paceNext = paceNext == 0 || now - paceNext > frame ? now + frame : paceNext + frame;
+	}
+
 	/** The water's part of a game tick: sources, poured water, then the next physics step. */
 	private void simulateTick(Minecraft client, ClientLevel current) {
 		tickPending = false;
@@ -158,7 +206,17 @@ public final class FluidManager {
 		// At the GPU's limit new water replaces calm water: everything below is limited to what was freed.
 		int spawnWanted = pendingSpawns.size() / 6 * simulation.params().particlesPerBlock();
 		int perSource = simulation.sourceParticlesPerTick(config.sourceFlow);
-		int freed = full ? simulation.recycleCalmWater(perSource * sources.size() + spawnWanted) : Integer.MAX_VALUE;
+		int asked = perSource * sources.size() + spawnWanted;
+		int freed = Integer.MAX_VALUE;
+		if (full) {
+			int got = simulation.recycleCalmWater(Math.max(0, asked - roomBank));
+			roomBank = Math.min(roomBank + got, 2 * asked);
+			roomRate += (got - roomRate) * 0.1f;
+			freed = Math.min(roomBank, Math.max((int) Math.ceil(roomRate), spawnWanted > 0 ? roomBank : 0));
+		} else {
+			roomBank = 0;
+			roomRate = asked;
+		}
 		int share = sources.isEmpty() ? 0 : (full ? freed * perSource / Math.max(1, perSource * sources.size() + spawnWanted) : Integer.MAX_VALUE);
 		long[] cells = new long[sources.size()];
 		// Water further away than the despawn distance would be removed again right away.
@@ -172,12 +230,14 @@ public final class FluidManager {
 			cells[i] = source.cell().asLong();
 		}
 		int spawnBudget = full ? Math.max(0, freed - used) : Integer.MAX_VALUE;
+		int spawned = 0;
 		for (int i = 0; i + 5 < pendingSpawns.size(); i += 6) {
 			Vec3 center = new Vec3(pendingSpawns.getDouble(i), pendingSpawns.getDouble(i + 1), pendingSpawns.getDouble(i + 2));
 			Vec3 velocity = new Vec3(pendingSpawns.getDouble(i + 3), pendingSpawns.getDouble(i + 4), pendingSpawns.getDouble(i + 5));
 			int added = spawnBudget > 0 ? simulation.spawnBlock(center, velocity, spawnBudget) : 0;
 			if (full) {
 				spawnBudget -= added;
+				spawned += added;
 				if (added == 0) {
 					tellGpuLimit(client.player);
 				}
@@ -187,6 +247,9 @@ public final class FluidManager {
 		}
 		if (full && freed == 0 && !sources.isEmpty()) {
 			tellGpuLimit(client.player);
+		}
+		if (full) {
+			roomBank = Math.max(0, roomBank - used - spawned);
 		}
 		pendingSpawns.clear();
 		simulation.setSources(cells);

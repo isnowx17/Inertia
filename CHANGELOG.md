@@ -3,6 +3,52 @@
 All notable changes to Inertia are documented here. Versioning rules are described in
 [PLAN.md](PLAN.md#5-sürümleme).
 
+## [1.3.0]
+
+Still water kept as a volume: a box, a pool or a room can be filled with far more water.
+
+### Added
+- **Still water as a volume** (`stillWaterVolume`, on by default). Calm water deep under the surface
+  is taken out of the physics and kept as a height per column of blocks, with a box in its place
+  that the water above rests on; the surface mesh fills that box with water of the same density, so
+  it looks the same, through glass too. Only the top few particle layers stay particles, so a deep
+  pool costs about as much as a shallow one. The water turns back into particles where it could move
+  again: when the water on it gets thin or drains away, when the water beside it is lower, when a
+  stream plunges down to it, when a block next to it changes, near flowing sources and around the
+  player. At the GPU's limit slowly moving deep water freezes too, and the sources pour as much new
+  water as froze, so the water keeps growing instead of new water replacing old. Measured at
+  `ultra`, filling a closed 7 x 7 box:
+
+  | | 1.2.1 | 1.3.0 |
+  |---|---|---|
+  | One source, native Windows, 240 Hz | not measured | 240 FPS, real time, 1.3 million particles of water and rising |
+  | Four sources, WSL2 | 350,000-410,000 particles, 0.89-0.97 x real time | box full: 4.6 million particles, 0.91-0.94 x real time |
+
+### Changed
+- At the GPU's limit no water is deleted any more while freezing can make room; deep water is taken
+  away only when the steps take longer than a game tick all the same.
+
+## [1.2.1]
+
+### Performance
+- **Frame pacing while the water needs the GPU.** With no frame limit the game drew 1,100-1,500
+  frames a second on an RTX 4090 Laptop, more than the screen shows, and those frames took the GPU
+  time the physics needed: the GPU's limit came at about 90,000 particles. When the physics steps
+  get long, Inertia now holds the frame rate to the screen's refresh rate (240 FPS there) until the
+  water is gone or sleeps; the limit then came at about 456,000 particles. Nothing happens with vsync
+  on or a frame limit at or below the refresh rate. The solver gets cheaper and calm water makes
+  room only after that.
+
+### Fixed
+- A falling stream from a flowing source no longer breaks into a row of lumps, one per tick. The
+  water of each tick now goes right on top of the stream, moving like a steady stream would, and the
+  stream gets thinner as it falls faster, like real water, so it stays one piece even over a long
+  drop.
+- At the GPU's limit water no longer vanishes where it spreads thin over the ground. New water now
+  replaces calm water only where the water is deep (deepest first), so a room still floods evenly and
+  only deep water sinks a little. When there is not enough deep water, the sources pour a thinner
+  stream instead, at an even rate.
+
 ## [1.2.0]
 
 A big performance update: the game never waits for the GPU, still water costs next to nothing, and

@@ -271,7 +271,7 @@ final class TerrainCollider implements AutoCloseable {
 		return (hash * 31L + partialBoxes.size()) | 1L;
 	}
 
-	private static void attachBox(
+	static void attachBox(
 		MemoryStack mem, PxRigidStatic actor, PxShapeFlags flags, PxQuat identity,
 		float x0, float y0, float z0, float x1, float y1, float z1
 	) {

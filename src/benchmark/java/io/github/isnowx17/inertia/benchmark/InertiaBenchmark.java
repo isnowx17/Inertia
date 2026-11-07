@@ -78,6 +78,17 @@ public final class InertiaBenchmark implements ClientModInitializer {
 		new Object[][] {{"waterfall", 200, 400}, {"pool", 600, 800}, {"still", 1000, 1200}, {"surface", 1300, 1500}, {"inside", 1560, 1700}},
 		400, 1200, 1500, 1700);
 
+	/** A closed box 7 x 7 blocks wide and 16 deep, filled to the top by four sources: lots of still water. */
+	private static final Scene FILL = new Scene(
+		new BlockPos[] {new BlockPos(-2, -45, -2), new BlockPos(2, -45, -2), new BlockPos(-2, -45, 2), new BlockPos(2, -45, 2)},
+		new Object[][] {{"filling", 400, 800}, {"deep", 1200, 1500}, {"full", 1800, 2000}, {"surface", 2050, 2250}, {"inside", 2300, 2500}},
+		2000, 2000, 2250, 2500);
+
+	/** {@link #FILL} with a single source, as a player would fill a box. */
+	private static final Scene FILL_ONE = new Scene(
+		new BlockPos[] {new BlockPos(0, -45, 0)},
+		FILL.phases(), FILL.stopSources(), FILL.moveToSurface(), FILL.moveInside(), FILL.finish());
+
 	private enum Stage { WAIT_TITLE, CREATING, IN_WORLD, DONE }
 
 	private String label;
@@ -110,8 +121,9 @@ public final class InertiaBenchmark implements ClientModInitializer {
 		if (label == null || label.isBlank()) {
 			return;
 		}
-		scene = "light".equals(System.getProperty("inertia.benchmark.scene")) ? LIGHT : HEAVY;
-		LOGGER.info("Inertia benchmark '{}' armed ({} scene)", label, scene == LIGHT ? "light" : "heavy");
+		String sceneName = System.getProperty("inertia.benchmark.scene", "heavy");
+		scene = "light".equals(sceneName) ? LIGHT : "fill".equals(sceneName) ? FILL : "fill1".equals(sceneName) ? FILL_ONE : HEAVY;
+		LOGGER.info("Inertia benchmark '{}' armed ({} scene)", label, sceneName());
 		ScreenEvents.AFTER_INIT.register((client, screen, width, height) -> {
 			if (stage == Stage.WAIT_TITLE && !(screen instanceof CreateWorldScreen) && client.level == null
 				&& (screen instanceof TitleScreen || screen.getClass().getSimpleName().contains("Onboarding"))) {
@@ -138,6 +150,10 @@ public final class InertiaBenchmark implements ClientModInitializer {
 			inertiaCpuNanos += System.nanoTime() - inertiaStart;
 			frame();
 		});
+	}
+
+	private String sceneName() {
+		return scene == LIGHT ? "light" : scene == FILL ? "fill" : scene == FILL_ONE ? "fill1" : "heavy";
 	}
 
 	private void createWorld(Minecraft client) {
@@ -256,7 +272,21 @@ public final class InertiaBenchmark implements ClientModInitializer {
 			command(client, "fill -8 -60 -8 8 -55 8 minecraft:stone");
 			command(client, "fill -7 -60 -7 7 -55 7 minecraft:air");
 			command(client, "fill -12 -51 -12 -11 -51 -11 minecraft:stone");
-			moveTo(client, -11.0, -50, -11.0, -45, 32);
+			if ((scene == FILL || scene == FILL_ONE)) {
+				command(client, "fill -4 -61 -4 4 -44 4 minecraft:stone");
+				command(client, "fill -3 -60 -3 3 -44 3 minecraft:air");
+				// The water is watched through a glass wall.
+				command(client, "fill -3 -61 -4 3 -44 -4 minecraft:glass");
+				moveTo(client, 0.5, -52, -11.5, 0, 33);
+			} else {
+				moveTo(client, -11.0, -50, -11.0, -45, 32);
+			}
+		}
+		if (worldTicks % 100 == 0 && InertiaClient.fluids().simulation() != null) {
+			FluidSimulation s = InertiaClient.fluids().simulation();
+			LOGGER.info("WATER t={} active={} frozen={} columns={} stepMs={} limit={} asleep={} fps={}", worldTicks, s.activeCount(),
+				s.frozenParticles(), s.frozenColumns(), String.format(java.util.Locale.ROOT, "%.1f", s.lastStepMillis()), s.atGpuLimit(),
+				s.sleeping(), client.getFps());
 		}
 		// The world without any water: the ceiling for everything below.
 		if (worldTicks == 200) {
@@ -296,6 +326,7 @@ public final class InertiaBenchmark implements ClientModInitializer {
 				Screenshot.grab(client.gameDirectory, "bench-" + label + "-" + list[p][0] + ".png", client.gameRenderer.mainRenderTarget(), 1, m -> { });
 				phase.simTicks = sim.tickCount() - phase.firstSimTick;
 				phase = null;
+				writeResults(client);
 			}
 		}
 		if (phase != null) {
@@ -303,6 +334,7 @@ public final class InertiaBenchmark implements ClientModInitializer {
 			phase.tickNanos += tickNanos;
 			phase.maxTickNanos = Math.max(phase.maxTickNanos, tickNanos);
 			phase.particles += sim.activeCount();
+			phase.frozen += sim.frozenParticles();
 			phase.stepMillis += sim.lastStepMillis();
 			phase.simulateMillis += sim.lastSimulateMillis();
 			phase.substeps += sim.currentSubsteps();
@@ -315,12 +347,20 @@ public final class InertiaBenchmark implements ClientModInitializer {
 			stopWorldTick = worldTicks;
 		}
 		if (event(11, t, scene.moveToSurface())) {
-			moveTo(client, 3.5, -60, 3.5, -45, 25);
+			if ((scene == FILL || scene == FILL_ONE)) {
+				moveTo(client, 0.5, -48, 2.5, 180, 55);
+			} else {
+				moveTo(client, 3.5, -60, 3.5, -45, 25);
+			}
 		}
 		if (event(13, t, scene.moveInside())) {
 			// Spectators can stay low: the camera right under the water surface, looking along it.
 			command(client, "gamemode spectator @a");
-			moveTo(client, 3.5, -61.45, 3.5, -45, -8);
+			if ((scene == FILL || scene == FILL_ONE)) {
+				moveTo(client, 0.5, -52, 0.5, -45, 10);
+			} else {
+				moveTo(client, 3.5, -61.45, 3.5, -45, -8);
+			}
 		}
 		if (event(12, t, scene.finish())) {
 			stage = Stage.DONE;
@@ -344,7 +384,7 @@ public final class InertiaBenchmark implements ClientModInitializer {
 	private void writeResults(Minecraft client) {
 		JsonObject root = new JsonObject();
 		root.addProperty("label", label);
-		root.addProperty("scene", scene == LIGHT ? "light" : "heavy");
+		root.addProperty("scene", sceneName());
 		root.addProperty("keepRealTime", InertiaClient.fluids().config().keepRealTime);
 		root.addProperty("width", client.getWindow().getWidth());
 		root.addProperty("height", client.getWindow().getHeight());
@@ -374,6 +414,7 @@ public final class InertiaBenchmark implements ClientModInitializer {
 		long tickNanos;
 		long maxTickNanos;
 		double particles;
+		double frozen;
 		double stepMillis;
 		double simulateMillis;
 		double substeps;
@@ -434,6 +475,7 @@ public final class InertiaBenchmark implements ClientModInitializer {
 			o.addProperty("tickMsAvg", round(tickNanos / 1e6 / Math.max(1, ticks)));
 			o.addProperty("tickMsMax", round(maxTickNanos / 1e6));
 			o.addProperty("particlesAvg", Math.round(particles / Math.max(1, ticks)));
+			o.addProperty("frozenParticlesAvg", Math.round(frozen / Math.max(1, ticks)));
 			o.addProperty("physicsStepMsAvg", round(stepMillis / Math.max(1, ticks)));
 			o.addProperty("physicsGpuMsAvg", round(simulateMillis / Math.max(1, ticks)));
 			o.addProperty("substepsAvg", round(substeps / Math.max(1, ticks)));
