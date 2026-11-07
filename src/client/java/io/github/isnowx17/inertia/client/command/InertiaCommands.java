@@ -47,6 +47,7 @@ public final class InertiaCommands {
 						sim.atGpuLimit() ? "✔" : "✘",
 						sim.sleeping() ? "✔" : "✘"
 					));
+					source.sendFeedback(Component.translatable("command.inertia.info.frozen", sim.frozenColumns(), sim.frozenParticles()));
 				}
 				return 1;
 			}))

@@ -351,4 +351,38 @@ class FluidSurfaceMesherTest {
 	private static float nz(FluidSurfaceMesher.Mesh m, int v) {
 		return m.vertices[v * FluidSurfaceMesher.VERTEX_STRIDE + 5];
 	}
+
+	@Test
+	void boxOfWaterLooksLikeItsParticles() {
+		// The lower half as particles or as a box: the same field, so the same surface.
+		FluidSurfaceMesher particles = mesher();
+		// Sizes that are whole numbers of particle spacings.
+		float[] all = box(0f, 0f, 0f, 2.5f, 2.5f, 2.5f);
+		FluidSurfaceMesher.Mesh full = particles.mesh(all, null, all.length / 3, null);
+		FluidSurfaceMesher mixed = mesher();
+		float[] upper = box(0f, 1.25f, 0f, 2.5f, 2.5f, 2.5f);
+		float[] lower = {0f, 0f, 0f, 2.5f, 1.25f, 2.5f};
+		FluidSurfaceMesher.Mesh half = mixed.mesh(upper, null, upper.length / 3, 3, lower, 1, null);
+
+		// Inside the water the particles' field ripples a little (the lattice does not line up with the
+		// grid); the surface, where the field crosses the threshold, is the same.
+		float[] a = bounds(full);
+		float[] b = bounds(half);
+		for (int k = 0; k < 6; k++) {
+			assertEquals(a[k], b[k], 0.02f, "surface bounds " + k);
+		}
+		assertEquals(full.vertexCount, half.vertexCount, Math.max(4, full.vertexCount / 50));
+	}
+
+	private static float[] bounds(FluidSurfaceMesher.Mesh mesh) {
+		float[] b = {Float.MAX_VALUE, Float.MAX_VALUE, Float.MAX_VALUE, -Float.MAX_VALUE, -Float.MAX_VALUE, -Float.MAX_VALUE};
+		for (int v = 0; v < mesh.vertexCount; v++) {
+			for (int k = 0; k < 3; k++) {
+				float p = mesh.vertices[v * FluidSurfaceMesher.VERTEX_STRIDE + k];
+				b[k] = Math.min(b[k], p);
+				b[k + 3] = Math.max(b[k + 3], p);
+			}
+		}
+		return b;
+	}
 }

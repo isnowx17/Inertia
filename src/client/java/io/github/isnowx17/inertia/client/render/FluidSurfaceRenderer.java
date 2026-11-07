@@ -381,7 +381,8 @@ public final class FluidSurfaceRenderer {
 		try {
 			worker.execute(() -> {
 				try {
-					job.mesh(snapshot.positions(), snapshot.velocities(), snapshot.count(), FluidSimulation.STRIDE, target.mesh);
+					job.mesh(snapshot.positions(), snapshot.velocities(), snapshot.count(), FluidSimulation.STRIDE,
+						snapshot.frozenBoxes(), snapshot.frozenBoxCount(), target.mesh);
 					collectDroplets(job, snapshot, target);
 					collectSpray(job, snapshot.diffuse(), diffuseCount, target);
 					if (foamJob != null) {

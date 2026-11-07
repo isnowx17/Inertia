@@ -133,8 +133,29 @@ class ParticleScanTest {
 		int[] cy = {2, 2, 0};
 		int[] cz = {0, -1, 4};
 		s.setSources(cx, cy, cz);
+		s.measureColumns = true;
 
 		Reference expected = new Reference(pos, vel, count, s, cx, cy, cz);
+		// Water per column and the highest particle in every source block, counted directly.
+		it.unimi.dsi.fastutil.longs.Long2IntOpenHashMap columns = new it.unimi.dsi.fastutil.longs.Long2IntOpenHashMap();
+		float[] tops = new float[cx.length];
+		java.util.Arrays.fill(tops, Float.NEGATIVE_INFINITY);
+		it.unimi.dsi.fastutil.ints.IntOpenHashSet lostSet = new it.unimi.dsi.fastutil.ints.IntOpenHashSet(expected.lost);
+		for (int i = 0; i < count; i++) {
+			if (lostSet.contains(i)) {
+				continue;
+			}
+			float x = pos[i * STRIDE];
+			float y = pos[i * STRIDE + 1];
+			float z = pos[i * STRIDE + 2];
+			columns.addTo(ParticleScan.column(x, z), 1);
+			for (int k = 0; k < cx.length; k++) {
+				if (SourceSlots.slot(x - cx[k], y - cy[k], z - cz[k], PER_AXIS) >= 0) {
+					tops[k] = Math.max(tops[k], y - cy[k]);
+					break;
+				}
+			}
+		}
 
 		for (int chunks : new int[] {1, 2, 7, 64}) {
 			ParticleScan.Part total = new ParticleScan.Part();
@@ -156,6 +177,10 @@ class ParticleScanTest {
 			assertEquals(expected.sumY, total.sumY, 1e-6 * Math.max(1, Math.abs(expected.sumY)));
 			assertEquals(expected.sumZ, total.sumZ, 1e-6 * Math.max(1, Math.abs(expected.sumZ)));
 			assertTrue(expected.inside > 0 && expected.lost.size() > 0, "the test data covers both cases");
+			assertEquals(columns, total.columns, chunks + " chunks: water per column");
+			for (int k = 0; k < cx.length; k++) {
+				assertEquals(tops[k], total.sourceTop[k], chunks + " chunks: top of source " + k);
+			}
 			for (int k = 0; k < cx.length; k++) {
 				assertArrayEquals(expected.slots[k], total.sourceSlots[k], chunks + " chunks: source places " + k);
 				assertEquals(expected.counts[k], total.sourceCount[k], chunks + " chunks: source count " + k);

@@ -61,6 +61,13 @@ public final class InertiaConfig {
 	public boolean keepRealTime = true;
 
 	/**
+	 * Keep calm water deep under the surface as a volume instead of particles: it looks the same, but
+	 * only the top layers of a pool cost the GPU, so far more water fits. It turns back into particles
+	 * as soon as it could move (the player, flowing water, a changed block next to it).
+	 */
+	public boolean stillWaterVolume = true;
+
+	/**
 	 * Water a flowing water source lets out, in blocks of water per second; it leaves the source
 	 * block at this many blocks per second, as one continuous stream.
 	 */

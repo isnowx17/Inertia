@@ -184,6 +184,17 @@ public final class FluidSurfaceMesher {
 	 * @param target     mesh to fill (reused to avoid allocations), or {@code null} for a new one
 	 */
 	public Mesh mesh(float[] positions, float[] velocities, int count, int stride, Mesh target) {
+		return mesh(positions, velocities, count, stride, null, 0, target);
+	}
+
+	/**
+	 * Builds the surface of {@code count} particles and of water given as boxes: still water kept as a
+	 * volume, which counts as evenly spread particles of the same spacing filling each box.
+	 *
+	 * @param boxes    min x, y, z, max x, y, z of every box, or {@code null}
+	 * @param boxCount number of boxes
+	 */
+	public Mesh mesh(float[] positions, float[] velocities, int count, int stride, float[] boxes, int boxCount, Mesh target) {
 		Mesh mesh = target != null ? target : new Mesh();
 		mesh.vertexCount = 0;
 		mesh.quadCount = 0;
@@ -191,7 +202,7 @@ public final class FluidSurfaceMesher {
 		for (float[] brick : bricks.values()) {
 			recycle(brick);
 		}
-		bricks = splat(positions, velocities, count, stride);
+		bricks = splat(positions, velocities, count, stride, boxes, boxes == null ? 0 : boxCount);
 		meshedPositions = positions;
 		meshedCount = count;
 		meshedStride = stride;
@@ -358,7 +369,8 @@ public final class FluidSurfaceMesher {
 	// Density field
 	// ------------------------------------------------------------------------------------------
 
-	private Long2ObjectOpenHashMap<float[]> splat(float[] positions, float[] velocities, int count, int stride) {
+	private Long2ObjectOpenHashMap<float[]> splat(float[] positions, float[] velocities, int count, int stride,
+		float[] boxes, int boxCount) {
 		float inv = 1f / cellSize;
 
 		// 1. Bin particle indices by the brick of their lowest grid node. A particle on the last node
@@ -439,6 +451,48 @@ public final class FluidSurfaceMesher {
 				counts.addTo(entry.getLongKey(), entry.getValue().size());
 			}
 		}
+		// The boxes: the particles they stand for per brick, and the boxes reaching each brick's nodes.
+		Long2ObjectOpenHashMap<IntArrayList> boxBricks = new Long2ObjectOpenHashMap<>();
+		if (boxCount > 0) {
+			float perVolume = restDensity * inv * inv * inv;
+			float brickSize = cellSize * BRICK;
+			for (int b = 0; b < boxCount; b++) {
+				int o = b * 6;
+				float x0 = boxes[o];
+				float y0 = boxes[o + 1];
+				float z0 = boxes[o + 2];
+				float x1 = boxes[o + 3];
+				float y1 = boxes[o + 4];
+				float z1 = boxes[o + 5];
+				if (!(x1 > x0) || !(y1 > y0) || !(z1 > z0)) {
+					continue;
+				}
+				// Nodes within one cell of the box get some of its density.
+				int bx0 = floor(x0 * inv - 1f) >> BRICK_BITS;
+				int by0 = floor(y0 * inv - 1f) >> BRICK_BITS;
+				int bz0 = floor(z0 * inv - 1f) >> BRICK_BITS;
+				int bx1 = floor(x1 * inv + 1f) >> BRICK_BITS;
+				int by1 = floor(y1 * inv + 1f) >> BRICK_BITS;
+				int bz1 = floor(z1 * inv + 1f) >> BRICK_BITS;
+				for (int bx = bx0; bx <= bx1; bx++) {
+					float ox = overlap(x0, x1, bx * brickSize, (bx + 1) * brickSize);
+					for (int by = by0; by <= by1; by++) {
+						float oy = overlap(y0, y1, by * brickSize, (by + 1) * brickSize);
+						for (int bz = bz0; bz <= bz1; bz++) {
+							float oz = overlap(z0, z1, bz * brickSize, (bz + 1) * brickSize);
+							long key = brickKey(bx, by, bz);
+							counts.addTo(key, Math.round(ox * oy * oz * perVolume));
+							IntArrayList list = boxBricks.get(key);
+							if (list == null) {
+								list = new IntArrayList();
+								boxBricks.put(key, list);
+							}
+							list.add(b);
+						}
+					}
+				}
+			}
+		}
 		long[] keys = counts.keySet().toLongArray();
 		int n = keys.length;
 
@@ -489,6 +543,12 @@ public final class FluidSurfaceMesher {
 					float vy = velocities != null ? velocities[o + 1] : 0f;
 					float vz = velocities != null ? velocities[o + 2] : 0f;
 					splatParticle(brick, gx, gy, gz, vx, vy, vz);
+				}
+			}
+			IntArrayList inBoxes = boxBricks.get(key);
+			if (inBoxes != null) {
+				for (int k = 0, size = inBoxes.size(); k < size; k++) {
+					splatBox(brick, minX, minY, minZ, boxes, inBoxes.getInt(k));
 				}
 			}
 			// Weighted velocity sums become node velocities; keep the unsmoothed density.
@@ -545,6 +605,71 @@ public final class FluidSurfaceMesher {
 			}
 		}
 		return result;
+	}
+
+	/** Length of the overlap of {@code [a0, a1]} and {@code [b0, b1]}. */
+	private static float overlap(float a0, float a1, float b0, float b1) {
+		return Math.max(0f, Math.min(a1, b1) - Math.max(a0, b0));
+	}
+
+	private final ThreadLocal<float[]> boxWeights = ThreadLocal.withInitial(() -> new float[BRICK * 3]);
+
+	/**
+	 * Adds the density of box {@code b} to the nodes of a brick whose first node is {@code min}: what
+	 * evenly spread particles filling the box give with the linear splat, per axis the share of a
+	 * node's tent that lies in the box.
+	 */
+	private void splatBox(float[] brick, int minX, int minY, int minZ, float[] boxes, int b) {
+		float inv = 1f / cellSize;
+		int o = b * 6;
+		float[] w = boxWeights.get();
+		int[] range = new int[6];
+		for (int axis = 0; axis < 3; axis++) {
+			float lo = boxes[o + axis] * inv;
+			float hi = boxes[o + 3 + axis] * inv;
+			int first = axis == 0 ? minX : axis == 1 ? minY : minZ;
+			int from = BRICK;
+			int to = -1;
+			for (int l = 0; l < BRICK; l++) {
+				float g = first + l;
+				float share = tentShare(hi - g) - tentShare(lo - g);
+				w[axis * BRICK + l] = share;
+				if (share > 0f) {
+					from = Math.min(from, l);
+					to = l;
+				}
+			}
+			if (to < 0) {
+				return;
+			}
+			range[axis * 2] = from;
+			range[axis * 2 + 1] = to;
+		}
+		float rest = restDensity;
+		for (int z = range[4]; z <= range[5]; z++) {
+			float wz = w[2 * BRICK + z] * rest;
+			for (int y = range[2]; y <= range[3]; y++) {
+				float wyz = w[BRICK + y] * wz;
+				int base = localIndex(0, y, z) * CHANNELS;
+				for (int x = range[0]; x <= range[1]; x++) {
+					brick[base + x * CHANNELS] += w[x] * wyz;
+				}
+			}
+		}
+	}
+
+	/** Share of a node's tent (half-width one cell) that lies below {@code u} cells from the node. */
+	private static float tentShare(float u) {
+		if (u <= -1f) {
+			return 0f;
+		}
+		if (u < 0f) {
+			return 0.5f * (u + 1f) * (u + 1f);
+		}
+		if (u < 1f) {
+			return 1f - 0.5f * (1f - u) * (1f - u);
+		}
+		return 1f;
 	}
 
 	/** Adds one particle at local grid coordinates (g) to the up to eight nodes around it. */

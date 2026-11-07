@@ -12,6 +12,7 @@
   "command.inertia.info.idle": "Fluid simulation: not running",
   "command.inertia.info.simulation": "Fluid simulation: %s / %s particles, %s foam particles, %s collision sections, %s ms per tick",
   "command.inertia.info.solver": "Water solver: %s sub-steps, %s iterations, GPU limit reached: %s, asleep: %s",
+  "command.inertia.info.frozen": "Still water kept as a volume: %s columns, as much water as %s particles",
   "command.inertia.clear": "Removed %s water particles",
   "item.inertia.fluid_source": "PhysX Flowing Water Bucket",
   "message.inertia.source_added": "Inertia: water source on (%s active)",

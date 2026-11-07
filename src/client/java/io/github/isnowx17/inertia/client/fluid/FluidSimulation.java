@@ -3,6 +3,7 @@ package io.github.isnowx17.inertia.client.fluid;
 import io.github.isnowx17.inertia.client.config.InertiaConfig;
 import io.github.isnowx17.inertia.client.physics.PhysXRuntime;
 import io.github.isnowx17.inertia.util.FluidParameters;
+import io.github.isnowx17.inertia.util.FrozenColumns;
 import io.github.isnowx17.inertia.util.ParticleScan;
 import io.github.isnowx17.inertia.util.SourceSlots;
 import it.unimi.dsi.fastutil.ints.IntArrayList;
@@ -111,6 +112,14 @@ public final class FluidSimulation implements AutoCloseable {
 	/** The solver gets better again when the better one is expected to take at most this long. */
 	private static final float STEP_RELAXED_MILLIS = 37f;
 	/**
+	 * Steps longer than this (on average) start frame pacing: the frames drawn faster than the screen
+	 * shows them take GPU time from the physics (with no frame limit, often several times as much as
+	 * the screen needs). The solver gets cheaper and calm water makes room only after pacing has had
+	 * {@link #PACING_FIRST_STEPS} steps to help.
+	 */
+	private static final float PACING_MILLIS = 30f;
+	private static final int PACING_FIRST_STEPS = 20;
+	/**
 	 * Above this with the cheapest solver, the GPU has reached what it can simulate in real time (with
 	 * some room: water keeps moving, and the next step can only start on the next frame).
 	 */
@@ -134,7 +143,9 @@ public final class FluidSimulation implements AutoCloseable {
 	/** Recycled water is taken from this many places in the particle list, so it is never missed in one spot. */
 	private static final int RECYCLE_GROUPS = 16;
 	/** Particles looked at per particle taken, before a place is given up. */
-	private static final int RECYCLE_SEARCH = 64;
+	private static final int RECYCLE_SEARCH = 256;
+	/** Water at least this many particle layers deep may make room for new water. */
+	private static final int RECYCLE_MIN_LAYERS = 4;
 	/** The longest foam lives, relative to the configured lifetime (SurfaceFoam). */
 	private static final float FOAM_LONGEST_LIFE = 2.3f;
 	/** Steps to wait after a change of solver before getting cheaper or better again. */
@@ -216,6 +227,9 @@ public final class FluidSimulation implements AutoCloseable {
 	private int stepsSinceSolverChange;
 	private boolean gpuLimit;
 	private final IntArrayList recycled = new IntArrayList();
+	/** See {@link #wantsFramePacing}. */
+	private volatile boolean framePacing;
+	private int stepsPacing;
 	private int recycleOffset;
 	// Still water sleeps: no physics steps until something happens to it (see #sleep).
 	private int stillSteps;
@@ -263,6 +277,17 @@ public final class FluidSimulation implements AutoCloseable {
 
 	private final TerrainCollider terrain;
 	private final PlayerBody playerBody;
+	/** Calm water deep under the surface, kept as a volume instead of particles; null when switched off. */
+	private final FrozenColumns frozen;
+	private final FrozenCollider frozenCollider;
+	private final IntArrayList frozenRemoval = new IntArrayList();
+	/** Columns measured one by one around the water at most (per axis); wider water freezes nothing. */
+	private static final int MAX_GRID_SIZE = 160;
+	/** Box (x and z, relative) of the water added since the last step was launched; min > max when none. */
+	private float addedMinX = Float.POSITIVE_INFINITY;
+	private float addedMaxX = Float.NEGATIVE_INFINITY;
+	private float addedMinZ = Float.POSITIVE_INFINITY;
+	private float addedMaxZ = Float.NEGATIVE_INFINITY;
 	private final LongOpenHashSet pendingUrgentSections = new LongOpenHashSet();
 
 	public FluidSimulation(InertiaConfig config) {
@@ -318,6 +343,25 @@ public final class FluidSimulation implements AutoCloseable {
 
 		terrain = new TerrainCollider(scene);
 		playerBody = new PlayerBody(scene);
+		if (config.stillWaterVolume) {
+			frozen = new FrozenColumns(params.spacing(), params.particlesPerAxis(), params.solidRestOffset());
+			frozenCollider = new FrozenCollider(scene, params.spacing(), params.solidRestOffset() - 0.5f * params.spacing());
+		} else {
+			frozen = null;
+			frozenCollider = null;
+		}
+	}
+
+	private boolean frozenEmpty() {
+		return frozen == null || frozen.isEmpty();
+	}
+
+	/** Notes water added at {@code x, z} (relative), so the next step measures the columns there. */
+	private void noteAdded(float x0, float z0, float x1, float z1) {
+		addedMinX = Math.min(addedMinX, x0);
+		addedMaxX = Math.max(addedMaxX, x1);
+		addedMinZ = Math.min(addedMinZ, z0);
+		addedMaxZ = Math.max(addedMaxZ, z1);
 	}
 
 	/**
@@ -492,7 +536,7 @@ public final class FluidSimulation implements AutoCloseable {
 		awaitStep();
 		// Re-centre the scene whenever it is empty. While water exists the origin stays put; all
 		// water is within the despawn distance of the player, so floats remain precise.
-		if (activeCount == 0 || !originSet) {
+		if ((activeCount == 0 && frozenEmpty()) || !originSet) {
 			rebase(BlockPos.containing(center));
 		}
 
@@ -547,6 +591,7 @@ public final class FluidSimulation implements AutoCloseable {
 		activeCount += written;
 		buffer.setNbActiveParticles(activeCount);
 		version++;
+		noteAdded(baseX, baseZ, baseX + 1f, baseZ + 1f);
 
 		// Collision geometry around fresh water must exist before the next step.
 		int sx = Mth.floor(center.x) >> 4;
@@ -565,8 +610,9 @@ public final class FluidSimulation implements AutoCloseable {
 	/**
 	 * Lets a steady flow of water out of the block of a flowing water source: every tick the same
 	 * amount of water ({@code blocksPerSecond}) appears in the free places of the block, the top
-	 * layer first, moving down at {@code blocksPerSecond} blocks per second. Falling freely, each
-	 * tick's layer joins the one before into one continuous column through the block. When the
+	 * layer first, moving down at {@code blocksPerSecond} blocks per second. While the stream falls
+	 * freely through the block, the water goes right on top of it instead (see
+	 * {@link #continueStream}). When the
 	 * water cannot get away (a pool below), the block fills up and the new water comes gently, so
 	 * the water spreads out like from a water source block. A full block gets nothing. Called every
 	 * tick for every source.
@@ -580,7 +626,7 @@ public final class FluidSimulation implements AutoCloseable {
 	 */
 	public int fillSource(BlockPos cell, float blocksPerSecond, int maxParticles) {
 		awaitStep();
-		if (activeCount == 0 || !originSet) {
+		if ((activeCount == 0 && frozenEmpty()) || !originSet) {
 			rebase(cell);
 		}
 		int perAxis = params.particlesPerAxis();
@@ -595,11 +641,14 @@ public final class FluidSimulation implements AutoCloseable {
 		float vz = 0f;
 		if (measured != null && measured.slots.length >= SourceSlots.words(perAxis)) {
 			taken = measured.slots;
-			if (measured.count >= slots * SOURCE_POOLING_FILL) {
+			// A stream falling through fills much of the block too; it does not count as pooled water.
+			if (measured.count >= slots * SOURCE_POOLING_FILL && measured.sumY / measured.count > -0.5f * flowSpeed) {
 				// The water cannot get away (a pool below): add it gently, moving with the water there.
 				vx = measured.sumX / measured.count;
 				vy = Math.min(measured.sumY / measured.count, 0f);
 				vz = measured.sumZ / measured.count;
+			} else if (measured.count > 0) {
+				return continueStream(cell, measured, flowSpeed, maxParticles);
 			}
 		} else if (activeCount == 0) {
 			taken = new long[SourceSlots.words(perAxis)];
@@ -655,6 +704,13 @@ public final class FluidSimulation implements AutoCloseable {
 		buffer.setNbActiveParticles(activeCount);
 		version++;
 
+		markUrgent(cell);
+		return written;
+	}
+
+	/** The surface around a source is rebuilt first. */
+	private void markUrgent(BlockPos cell) {
+		noteAdded(cell.getX() - originX, cell.getZ() - originZ, cell.getX() - originX + 1, cell.getZ() - originZ + 1);
 		int sx = cell.getX() >> 4;
 		int sy = cell.getY() >> 4;
 		int sz = cell.getZ() >> 4;
@@ -665,7 +721,105 @@ public final class FluidSimulation implements AutoCloseable {
 				}
 			}
 		}
+	}
+
+	/**
+	 * Lets the water out of a source whose stream is falling freely: the new water goes right on top
+	 * of the stream, one particle spacing above its highest particle, up to the top of the block, and
+	 * moves like a steady stream would there (a little slower than the stream's top, which left the
+	 * block earlier). Placed on fixed places in the block instead, each tick's water lands a little too
+	 * close to the water of the tick before or a little too far from it; the stream then breaks into
+	 * one lump per tick as it falls.
+	 */
+	private int continueStream(BlockPos cell, SourceCell measured, float flowSpeed, int maxParticles) {
+		int perAxis = params.particlesPerAxis();
+		int perLayer = perAxis * perAxis;
+		float spacing = 1f / perAxis;
+		// Fill the room between the stream's top and the top of the block with whole layers one spacing
+		// apart; what is left of the room is filled next tick. (A partly filled layer would be a weak
+		// place where the stream tears.)
+		float room = (1f - spacing * 0.1f) - measured.top;
+		int layers = Math.min((int) Math.floor(room / spacing), 2 * Math.max(1, sourceParticlesPerTick(flowSpeed) / perLayer));
+		int wanted = layers * perLayer;
+		int budget = Math.min(Math.min(wanted, maxParticles), ensureRoom(Math.min(wanted, maxParticles)));
+		if (budget <= 0 || layers <= 0) {
+			return 0;
+		}
+		wake();
+		// Less water than asked for (the GPU's limit): a thinner stream, the places nearest the middle
+		// of every layer, so the stream stays one piece.
+		int perLayerCount = Math.max(1, budget / layers);
+		layers = Math.min(layers, budget / perLayerCount);
+		int[] order = centerOrder(perAxis);
+
+		float jitter = spacing * 0.05f;
+		float baseX = cell.getX() - originX + spacing * 0.5f;
+		float baseY = cell.getY() - originY + measured.top;
+		float baseZ = cell.getZ() - originZ + spacing * 0.5f;
+		// Moving like a steady stream that leaves the top of the block at the flow speed: the further
+		// down in the block, the faster.
+		float startY = 1f - spacing * 0.5f;
+		float centerX = cell.getX() - originX + 0.5f;
+		float centerZ = cell.getZ() - originZ + 0.5f;
+		float invMass = 1f / params.particleMass();
+		ThreadLocalRandom random = ThreadLocalRandom.current();
+		int start = activeCount;
+		int written = 0;
+		for (int layer = 1; layer <= layers; layer++) {
+			float h = layer * spacing;
+			float fallen = Math.max(0f, startY - (measured.top + h));
+			float vy = -(float) Math.sqrt(flowSpeed * flowSpeed - 2f * GRAVITY * fallen);
+			// A falling stream gets faster and so thinner: water moves towards its middle at
+			// distance * g / (2 * speed). The particles cannot pull each other in, so they get that
+			// motion here; otherwise the stream stays as wide as the block, stretches and breaks up.
+			float narrowing = 0.5f * -GRAVITY / (2f * -vy);
+			for (int k = 0; k < perLayerCount; k++) {
+				int slot = order[k];
+				int i = start + written;
+				float px = baseX + (slot % perAxis) * spacing + (random.nextFloat() - 0.5f) * jitter;
+				float py = baseY + h + (random.nextFloat() - 0.5f) * jitter;
+				float pz = baseZ + (slot / perAxis) * spacing + (random.nextFloat() - 0.5f) * jitter;
+				float vx = (centerX - px) * narrowing;
+				float vz = (centerZ - pz) * narrowing;
+				hostPos.put(i * 4, px).put(i * 4 + 1, py).put(i * 4 + 2, pz).put(i * 4 + 3, invMass);
+				hostVel.put(i * 4, vx).put(i * 4 + 1, vy).put(i * 4 + 2, vz).put(i * 4 + 3, 0f);
+				currPos[i * STRIDE] = px;
+				currPos[i * STRIDE + 1] = py;
+				currPos[i * STRIDE + 2] = pz;
+				velocity[i * STRIDE] = vx;
+				velocity[i * STRIDE + 1] = vy;
+				velocity[i * STRIDE + 2] = vz;
+				written++;
+			}
+		}
+		// The new water is part of the block now: a second call in this tick must not fill it again.
+		measured.top += layers * spacing;
+		uploadRange(start, written, true);
+		activeCount += written;
+		buffer.setNbActiveParticles(activeCount);
+		version++;
+		markUrgent(cell);
 		return written;
+	}
+
+	private int[] centerOrder = new int[0];
+
+	/** The places of a layer of {@code perAxis} by {@code perAxis} particles, nearest the middle first. */
+	private int[] centerOrder(int perAxis) {
+		if (centerOrder.length != perAxis * perAxis) {
+			Integer[] slots = new Integer[perAxis * perAxis];
+			for (int k = 0; k < slots.length; k++) {
+				slots[k] = k;
+			}
+			float middle = (perAxis - 1) * 0.5f;
+			java.util.Arrays.sort(slots, java.util.Comparator.comparingDouble(k -> {
+				float dx = k % perAxis - middle;
+				float dz = k / perAxis - middle;
+				return dx * dx + dz * dz + k * 1e-6;
+			}));
+			centerOrder = java.util.Arrays.stream(slots).mapToInt(Integer::intValue).toArray();
+		}
+		return centerOrder;
 	}
 
 	/** Particles a flowing water source adds per tick. */
@@ -688,28 +842,49 @@ public final class FluidSimulation implements AutoCloseable {
 		if (wanted <= 0 || activeCount == 0) {
 			return 0;
 		}
+		// Deep calm water freezes instead (see FrozenColumns): the room it made is what the new water
+		// gets, and none is taken away, unless the steps take too long all the same.
+		if (frozen != null) {
+			if (stepLoadMillis <= GPU_OVERLOADED_MILLIS) {
+				return frozen.takeFreedRoom(wanted);
+			}
+			return recycleDeep(wanted);
+		}
+		return recycleDeep(wanted);
+	}
+
+	/** {@link #recycleCalmWater} by taking deep calm water away. */
+	private int recycleDeep(int wanted) {
 		recycled.clear();
-		float calm = CALM_SPEED * CALM_SPEED;
 		int asked = wanted;
 		if (stepLoadMillis > GPU_OVERLOADED_MILLIS) {
 			wanted += wanted / 4;
 		}
-		int perGroup = wanted / RECYCLE_GROUPS + 1;
-		int spacing = Math.max(1, activeCount / RECYCLE_GROUPS);
-		// Golden-ratio steps through the spacing: over time every particle's turn comes.
-		recycleOffset = (int) ((recycleOffset + spacing * 0.618f + 1) % spacing);
-		float[] v = velocity;
-		for (int g = 0; g < RECYCLE_GROUPS && recycled.size() < wanted; g++) {
-			int start = recycleOffset + g * spacing;
-			int end = Math.min(activeCount, Math.min(start + spacing, start + perGroup * RECYCLE_SEARCH));
-			int found = 0;
-			for (int i = start; i < end && found < perGroup && recycled.size() < wanted; i++) {
-				int o = i * STRIDE;
-				if (v[o] * v[o] + v[o + 1] * v[o + 1] + v[o + 2] * v[o + 2] < calm) {
-					recycled.add(i);
-					found++;
+		// Only where the water is deep: there the water closes over the gap and the level sinks a
+		// little, where thin water spreading over the ground would visibly vanish. Deepest first.
+		it.unimi.dsi.fastutil.longs.Long2IntOpenHashMap columns = scan.columns;
+		int deepest = 0;
+		for (it.unimi.dsi.fastutil.ints.IntIterator it = columns.values().iterator(); it.hasNext(); ) {
+			deepest = Math.max(deepest, it.nextInt());
+		}
+		int perLayer = params.particlesPerAxis() * params.particlesPerAxis();
+		int[] depths = {deepest / 2, deepest / 4};
+		for (int pass = 0; pass < depths.length && recycled.size() < wanted; pass++) {
+			int minDepth = Math.max(RECYCLE_MIN_LAYERS * perLayer, depths[pass]);
+			if (deepest < minDepth) {
+				break;
+			}
+			recycleFrom(columns, minDepth, wanted);
+			// Ascending and each once (a later pass may find the same particles again).
+			int[] list = recycled.elements();
+			it.unimi.dsi.fastutil.ints.IntArrays.quickSort(list, 0, recycled.size());
+			int unique = 0;
+			for (int k = 0; k < recycled.size(); k++) {
+				if (unique == 0 || list[k] != list[unique - 1]) {
+					list[unique++] = list[k];
 				}
 			}
+			recycled.size(unique);
 		}
 		int removed = recycled.size();
 		if (removed > 0) {
@@ -718,6 +893,40 @@ public final class FluidSimulation implements AutoCloseable {
 			version++;
 		}
 		return Math.min(removed, asked);
+	}
+
+	/** Adds calm particles in columns holding at least {@code minDepth} particles to {@link #recycled}. */
+	private void recycleFrom(it.unimi.dsi.fastutil.longs.Long2IntOpenHashMap columns, int minDepth, int wanted) {
+		float calm = CALM_SPEED * CALM_SPEED;
+		int missing = wanted - recycled.size();
+		int perGroup = missing / RECYCLE_GROUPS + 1;
+		int spacing = Math.max(1, activeCount / RECYCLE_GROUPS);
+		// Golden-ratio steps through the spacing: over time every particle's turn comes.
+		recycleOffset = (int) ((recycleOffset + spacing * 0.618f + 1) % spacing);
+		float[] v = velocity;
+		float[] p = currPos;
+		long lastColumn = Long.MIN_VALUE;
+		boolean lastDeep = false;
+		for (int g = 0; g < RECYCLE_GROUPS && recycled.size() < wanted; g++) {
+			int start = recycleOffset + g * spacing;
+			int end = Math.min(activeCount, Math.min(start + spacing, start + perGroup * RECYCLE_SEARCH));
+			int found = 0;
+			for (int i = start; i < end && found < perGroup && recycled.size() < wanted; i++) {
+				int o = i * STRIDE;
+				if (v[o] * v[o] + v[o + 1] * v[o + 1] + v[o + 2] * v[o + 2] >= calm) {
+					continue;
+				}
+				long key = ParticleScan.column(p[o], p[o + 2]);
+				if (key != lastColumn) {
+					lastColumn = key;
+					lastDeep = columns.get(key) >= minDepth;
+				}
+				if (lastDeep) {
+					recycled.add(i);
+					found++;
+				}
+			}
+		}
 	}
 
 	/**
@@ -740,6 +949,9 @@ public final class FluidSimulation implements AutoCloseable {
 		float sumX;
 		float sumY;
 		float sumZ;
+		/** Height of the highest particle in the block (0 to 1), and its vertical velocity. */
+		float top;
+		float topVy;
 
 		SourceCell(long key, int x, int y, int z, int slotCount) {
 			this.key = key;
@@ -816,6 +1028,9 @@ public final class FluidSimulation implements AutoCloseable {
 			return;
 		}
 		tick++;
+		if (frozen != null) {
+			updateFrozen(level, player);
+		}
 		if (activeCount == 0) {
 			foamCount = 0;
 			terrain.update(level, new LongOpenHashSet(), new LongOpenHashSet(), tick);
@@ -853,6 +1068,8 @@ public final class FluidSimulation implements AutoCloseable {
 		s.originZ = originZ;
 		int perAxis = params.particlesPerAxis();
 		s.perAxis = perAxis;
+		// Near the GPU's limit calm water may have to make room for new water: from the deepest places.
+		s.measureColumns = config.keepRealTime && (gpuLimit || stepLoadMillis > GPU_ROOM_MILLIS);
 		SourceCell[] cells = new SourceCell[requestedSources.length];
 		int[] cellX = new int[cells.length];
 		int[] cellY = new int[cells.length];
@@ -866,6 +1083,9 @@ public final class FluidSimulation implements AutoCloseable {
 			cellZ[k] = cells[k].z;
 		}
 		s.setSources(cellX, cellY, cellZ);
+		s.calmSpeedSq = FrozenColumns.CALM_SPEED * FrozenColumns.CALM_SPEED;
+		s.restlessSpeedSq = FrozenColumns.RESTLESS_SPEED * FrozenColumns.RESTLESS_SPEED;
+		setGrid(s);
 		stepSources = cells;
 		stepParticleCount = activeCount;
 		stepHidesFoam = tick < foamHiddenUntilTick;
@@ -900,7 +1120,7 @@ public final class FluidSimulation implements AutoCloseable {
 		double dx = player.getX() - sleepPlayerX;
 		double dy = player.getY() - sleepPlayerY;
 		double dz = player.getZ() - sleepPlayerZ;
-		if (terrain.refreshDirty(level) || requestedSources.length > 0 || playerAtWater(player)
+		if (terrain.refreshDirty(level) || requestedSources.length > 0 || playerAtWater(player) || (frozen != null && frozen.hasChanges())
 			|| dx * dx + dy * dy + dz * dz > sleepPlayerRange * sleepPlayerRange) {
 			wake();
 			return false;
@@ -914,6 +1134,10 @@ public final class FluidSimulation implements AutoCloseable {
 			return false;
 		}
 		net.minecraft.world.phys.AABB box = player.getBoundingBox().inflate(PLAYER_WAKE_DISTANCE);
+		if (frozen != null && frozen.touches((float) (box.minX - originX), (float) (box.minY - originY), (float) (box.minZ - originZ),
+			(float) (box.maxX - originX), (float) (box.maxY - originY), (float) (box.maxZ - originZ))) {
+			return true;
+		}
 		for (int x = Mth.floor(box.minX); x <= Mth.floor(box.maxX); x++) {
 			for (int y = Mth.floor(box.minY); y <= Mth.floor(box.maxY); y++) {
 				for (int z = Mth.floor(box.minZ); z <= Mth.floor(box.maxZ); z++) {
@@ -1018,7 +1242,7 @@ public final class FluidSimulation implements AutoCloseable {
 			hostP.get(from * STRIDE, pos, from * STRIDE, (to - from) * STRIDE);
 			hostV.get(from * STRIDE, vel, from * STRIDE, (to - from) * STRIDE);
 			ParticleScan.Part part = parts[c];
-			part.reset(sources, perAxis);
+			part.reset(sources, perAxis, settings);
 			ParticleScan.scan(pos, vel, STRIDE, from, to, settings, part);
 		};
 		if (chunks == 1) {
@@ -1034,7 +1258,7 @@ public final class FluidSimulation implements AutoCloseable {
 			}
 		}
 		ParticleScan.Part total = nextScan;
-		total.reset(sources, perAxis);
+		total.reset(sources, perAxis, settings);
 		for (int c = 0; c < chunks; c++) {
 			ParticleScan.merge(total, parts[c]);
 		}
@@ -1083,11 +1307,22 @@ public final class FluidSimulation implements AutoCloseable {
 			cell.sumX = finished.sourceSum[k * 3];
 			cell.sumY = finished.sourceSum[k * 3 + 1];
 			cell.sumZ = finished.sourceSum[k * 3 + 2];
+			cell.top = finished.sourceTop[k];
+			cell.topVy = finished.sourceTopVy[k];
 			sourceCells.put(cell.key, cell);
 		}
 		version++;
 
-		removeLostParticles(finished.lost);
+		IntArrayList remove = finished.lost;
+		if (frozen != null && frozen.hasPlans()) {
+			frozenRemoval.clear();
+			frozen.commit(finished, currPos, STRIDE, frozenRemoval);
+			if (!frozenRemoval.isEmpty()) {
+				remove = mergeSorted(finished.lost, frozenRemoval);
+				version++;
+			}
+		}
+		removeLostParticles(remove);
 		updateSolver();
 		boolean still = finished.moving <= stepParticleCount * MOVING_FRACTION && finished.inside == 0 && finished.lost.isEmpty();
 		stillSteps = still ? stillSteps + 1 : 0;
@@ -1101,14 +1336,21 @@ public final class FluidSimulation implements AutoCloseable {
 		float sample = Math.min(lastStepMillis, LONGEST_STEP_SAMPLE_MILLIS);
 		stepLoadMillis = stepLoadMillis == 0f ? sample : stepLoadMillis + 0.2f * (sample - stepLoadMillis);
 		stepsSinceSolverChange++;
+		// Pacing stays on until the water is gone: switched off, the steps would get long again at once.
+		if (!framePacing && stepLoadMillis > PACING_MILLIS) {
+			framePacing = true;
+			stepsPacing = 0;
+		}
+		stepsPacing++;
+		boolean pacingTried = !framePacing || stepsPacing >= PACING_FIRST_STEPS;
 		int last = solverLevels.length - 1;
-		if (solverLevel < last && stepLoadMillis > STEP_BUDGET_MILLIS && stepsSinceSolverChange >= CHEAPER_AFTER_STEPS) {
+		if (pacingTried && solverLevel < last && stepLoadMillis > STEP_BUDGET_MILLIS && stepsSinceSolverChange >= CHEAPER_AFTER_STEPS) {
 			setSolverLevel(solverLevel + 1);
 		} else if (solverLevel > 0 && stepsSinceSolverChange >= BETTER_AFTER_STEPS
 			&& stepLoadMillis * solverLevels[solverLevel - 1].cost() / solverLevels[solverLevel].cost() < STEP_RELAXED_MILLIS) {
 			setSolverLevel(solverLevel - 1);
 		}
-		if (solverLevel == last && stepsSinceSolverChange >= CHEAPER_AFTER_STEPS && stepLoadMillis > GPU_LIMIT_MILLIS) {
+		if (pacingTried && solverLevel == last && stepsSinceSolverChange >= CHEAPER_AFTER_STEPS && stepLoadMillis > GPU_LIMIT_MILLIS) {
 			gpuLimit = true;
 		} else if (stepLoadMillis < GPU_ROOM_MILLIS || solverLevel != last) {
 			gpuLimit = false;
@@ -1122,6 +1364,15 @@ public final class FluidSimulation implements AutoCloseable {
 		}
 		stepLoadMillis = 0f;
 		gpuLimit = false;
+		framePacing = false;
+	}
+
+	/**
+	 * Whether the frame rate should be held to the screen's refresh rate, to leave the GPU to the
+	 * physics: the steps were getting long and the water is awake. Any thread.
+	 */
+	public boolean wantsFramePacing() {
+		return framePacing && !sleeping;
 	}
 
 	private void setSolverLevel(int level) {
@@ -1166,8 +1417,9 @@ public final class FluidSimulation implements AutoCloseable {
 	 * Client thread only.
 	 */
 	public Snapshot lease() {
+		float[] frozenBoxes = frozen != null ? frozen.boxes() : new float[0];
 		Snapshot snapshot = new Snapshot(currPos, velocity, activeCount, foam, foamCount, originX, originY, originZ,
-			tick, readBackNanos, version, timeScale);
+			tick, readBackNanos, version, timeScale, frozenBoxes, frozenBoxes.length / 6);
 		synchronized (leased) {
 			leased.add(currPos);
 			leased.add(velocity);
@@ -1192,9 +1444,209 @@ public final class FluidSimulation implements AutoCloseable {
 	 * @param readBackNanos {@link System#nanoTime()} the positions refer to
 	 * @param version       changes whenever the data changes
 	 * @param timeScale     simulated seconds per real second (1 while the GPU keeps up)
+	 * @param frozenBoxes   the frozen water ({@link FrozenColumns#boxes}), never changed afterwards
 	 */
 	public record Snapshot(float[] positions, float[] velocities, int count, float[] diffuse, int diffuseCount,
-		int originX, int originY, int originZ, long tick, long readBackNanos, long version, float timeScale) {
+		int originX, int originY, int originZ, long tick, long readBackNanos, long version, float timeScale,
+		float[] frozenBoxes, int frozenBoxCount) {
+	}
+
+	/**
+	 * Client thread, before a step: turns frozen water back into particles where it can move again,
+	 * plans the freezing of calm water for the step and brings the boxes in the scene up to date.
+	 */
+	private void updateFrozen(ClientLevel level, Player player) {
+		FrozenColumns.Context ctx = new FrozenColumns.Context();
+		ctx.player = config.playerInteraction && !player.isSpectator();
+		net.minecraft.world.phys.AABB box = player.getBoundingBox();
+		ctx.playerMinX = (float) (box.minX - originX);
+		ctx.playerMinY = (float) (box.minY - originY);
+		ctx.playerMinZ = (float) (box.minZ - originZ);
+		ctx.playerMaxX = (float) (box.maxX - originX);
+		ctx.playerMaxY = (float) (box.maxY - originY);
+		ctx.playerMaxZ = (float) (box.maxZ - originZ);
+		ctx.playerX = (float) (player.getX() - originX);
+		ctx.playerY = (float) (player.getY() - originY);
+		ctx.playerZ = (float) (player.getZ() - originZ);
+		ctx.maxDistSq = (float) config.despawnDistance * config.despawnDistance;
+		int sources = requestedSources.length;
+		ctx.sourceX = new int[sources];
+		ctx.sourceY = new int[sources];
+		ctx.sourceZ = new int[sources];
+		for (int k = 0; k < sources; k++) {
+			ctx.sourceX[k] = BlockPos.getX(requestedSources[k]) - originX;
+			ctx.sourceY[k] = BlockPos.getY(requestedSources[k]) - originY;
+			ctx.sourceZ[k] = BlockPos.getZ(requestedSources[k]) - originZ;
+		}
+		ctx.tight = gpuLimit;
+		ctx.overloaded = stepLoadMillis > GPU_OVERLOADED_MILLIS;
+
+		if (!frozen.isEmpty()) {
+			java.util.List<FrozenColumns.Thaw> thaws = activeCount == 0 ? frozen.thawAll() : frozen.thaw(scan, ctx);
+			if (!thaws.isEmpty()) {
+				long needed = 0;
+				for (FrozenColumns.Thaw t : thaws) {
+					needed += t.drop() ? 0 : t.particles();
+				}
+				int room = ensureRoom((int) Math.min(Integer.MAX_VALUE, needed));
+				int start = activeCount;
+				for (FrozenColumns.Thaw t : thaws) {
+					if (!t.drop()) {
+						if (t.particles() > room) {
+							continue; // waits until there is room
+						}
+						room -= spawnThawed(t);
+					}
+					frozen.applyThaw(t);
+				}
+				if (activeCount > start) {
+					uploadRange(start, activeCount - start, true);
+					buffer.setNbActiveParticles(activeCount);
+				}
+				version++;
+				wake();
+			}
+		}
+		if (activeCount > 0) {
+			frozen.plan(scan, new LevelBlocks(level, originX, originY, originZ), ctx);
+		}
+		if (frozenCollider != null) {
+			frozenCollider.update(frozen);
+		}
+	}
+
+	/** Puts a thawed part of a frozen column back as particles at rest; returns how many. */
+	private int spawnThawed(FrozenColumns.Thaw t) {
+		int perAxis = params.particlesPerAxis();
+		int perLayer = perAxis * perAxis;
+		float spacing = params.spacing();
+		int slots = (t.toLayer() - t.fromLayer()) * perLayer;
+		int n = t.particles();
+		if (n <= 0 || slots <= 0) {
+			return 0;
+		}
+		float invMass = 1f / params.particleMass();
+		float jitter = spacing * 0.05f;
+		float bottom = t.floor() + params.solidRestOffset() + t.fromLayer() * spacing;
+		ThreadLocalRandom random = ThreadLocalRandom.current();
+		int start = activeCount;
+		for (int m = 0; m < n; m++) {
+			// Spread evenly over the places; water that was packed closer than that goes in between.
+			boolean extra = m >= slots;
+			int slot = !extra ? (n <= slots ? (int) ((long) m * slots / n) : m) : (int) ((long) (m - slots) * slots / (n - slots));
+			int layer = slot / perLayer;
+			int rest = slot - layer * perLayer;
+			int ix = rest % perAxis;
+			int iz = rest / perAxis;
+			float half = extra ? 0.5f : 0f;
+			int i = start + m;
+			float px = t.x() + Math.min(perAxis - 0.5f, ix + 0.5f + half) * spacing + (random.nextFloat() - 0.5f) * jitter;
+			float py = bottom + (layer + half) * spacing + (random.nextFloat() - 0.5f) * jitter;
+			float pz = t.z() + Math.min(perAxis - 0.5f, iz + 0.5f + half) * spacing + (random.nextFloat() - 0.5f) * jitter;
+			hostPos.put(i * 4, px).put(i * 4 + 1, py).put(i * 4 + 2, pz).put(i * 4 + 3, invMass);
+			hostVel.put(i * 4, 0f).put(i * 4 + 1, 0f).put(i * 4 + 2, 0f).put(i * 4 + 3, 0f);
+			currPos[i * STRIDE] = px;
+			currPos[i * STRIDE + 1] = py;
+			currPos[i * STRIDE + 2] = pz;
+			velocity[i * STRIDE] = 0f;
+			velocity[i * STRIDE + 1] = 0f;
+			velocity[i * STRIDE + 2] = 0f;
+		}
+		activeCount += n;
+		noteAdded(t.x(), t.z(), t.x() + 1, t.z() + 1);
+		// Collision geometry around the thawed water must exist before the next step.
+		int wx = t.x() + originX;
+		int wz = t.z() + originZ;
+		int y0 = t.floor() + originY - 1;
+		int y1 = Mth.floor(bottom + (t.toLayer() - t.fromLayer()) * spacing) + originY + 1;
+		for (int y = y0 >> 4; y <= y1 >> 4; y++) {
+			for (int dx = -1; dx <= 1; dx++) {
+				for (int dz = -1; dz <= 1; dz++) {
+					pendingUrgentSections.add(SectionPos.asLong(((wx + dx) >> 4), y, ((wz + dz) >> 4)));
+				}
+			}
+		}
+		return n;
+	}
+
+	/**
+	 * The columns the step measures one by one: around the water of the latest step, the frozen water
+	 * and the water added since, with a margin; with the heights below which planned columns freeze.
+	 */
+	private void setGrid(ParticleScan.Settings s) {
+		s.gridSizeX = 0;
+		s.gridSizeZ = 0;
+		s.freezeBelow = null;
+		s.frozenTop = null;
+		float minX = Math.min(scan.minX, addedMinX);
+		float maxX = Math.max(scan.maxX, addedMaxX);
+		float minZ = Math.min(scan.minZ, addedMinZ);
+		float maxZ = Math.max(scan.maxZ, addedMaxZ);
+		addedMinX = Float.POSITIVE_INFINITY;
+		addedMaxX = Float.NEGATIVE_INFINITY;
+		addedMinZ = Float.POSITIVE_INFINITY;
+		addedMaxZ = Float.NEGATIVE_INFINITY;
+		if (frozen == null) {
+			return;
+		}
+		int[] frozenBounds = frozen.bounds();
+		if (frozenBounds != null) {
+			minX = Math.min(minX, frozenBounds[0]);
+			maxX = Math.max(maxX, frozenBounds[1]);
+			minZ = Math.min(minZ, frozenBounds[2]);
+			maxZ = Math.max(maxZ, frozenBounds[3]);
+		}
+		if (!(minX <= maxX) || !(minZ <= maxZ)) {
+			frozen.prepareScan(s);
+			return;
+		}
+		int x0 = Mth.floor(minX) - 2;
+		int z0 = Mth.floor(minZ) - 2;
+		int sizeX = Mth.floor(maxX) + 3 - x0;
+		int sizeZ = Mth.floor(maxZ) + 3 - z0;
+		if (sizeX > MAX_GRID_SIZE || sizeZ > MAX_GRID_SIZE) {
+			frozen.prepareScan(s);
+			return;
+		}
+		s.gridX0 = x0;
+		s.gridZ0 = z0;
+		s.gridSizeX = sizeX;
+		s.gridSizeZ = sizeZ;
+		frozen.prepareScan(s);
+	}
+
+	/** Two ascending index lists as one, each index once. */
+	private static IntArrayList mergeSorted(IntArrayList a, IntArrayList b) {
+		IntArrayList out = new IntArrayList(a.size() + b.size());
+		int i = 0;
+		int j = 0;
+		while (i < a.size() || j < b.size()) {
+			int next;
+			if (j >= b.size() || (i < a.size() && a.getInt(i) <= b.getInt(j))) {
+				next = a.getInt(i++);
+			} else {
+				next = b.getInt(j++);
+			}
+			if (out.isEmpty() || out.getInt(out.size() - 1) != next) {
+				out.add(next);
+			}
+		}
+		return out;
+	}
+
+	/** The blocks of the level for {@link FrozenColumns}, relative to the origin. */
+	private record LevelBlocks(ClientLevel level, int ox, int oy, int oz) implements FrozenColumns.Blocks {
+		@Override
+		public boolean solid(int x, int y, int z) {
+			BlockPos pos = new BlockPos(x + ox, y + oy, z + oz);
+			return level.getBlockState(pos).getCollisionShape(level, pos) == net.minecraft.world.phys.shapes.Shapes.block();
+		}
+
+		@Override
+		public boolean open(int x, int y, int z) {
+			BlockPos pos = new BlockPos(x + ox, y + oy, z + oz);
+			return level.getBlockState(pos).getCollisionShape(level, pos).isEmpty();
+		}
 	}
 
 	private void updateTerrain(ClientLevel level) {
@@ -1314,6 +1766,11 @@ public final class FluidSimulation implements AutoCloseable {
 		version++;
 		buffer.setNbActiveParticles(0);
 		terrain.clear();
+		if (frozen != null) {
+			frozen.clear();
+			frozenCollider.clear();
+			frozen.takeDirtyGroups();
+		}
 		playerBody.remove();
 		resetSolver();
 		wake();
@@ -1325,10 +1782,26 @@ public final class FluidSimulation implements AutoCloseable {
 
 	public void onBlockChanged(BlockPos pos) {
 		terrain.markBlockDirty(pos);
+		if (frozen != null && originSet) {
+			frozen.blockChanged(pos.getX() - originX, pos.getY() - originY, pos.getZ() - originZ);
+		}
 	}
 
 	public void onSectionChanged(int sx, int sy, int sz) {
 		terrain.markSectionDirty(sx, sy, sz);
+		if (frozen != null && originSet && !frozen.isEmpty()) {
+			// A whole section at once (a chunk arriving, for example): every frozen column in it thaws.
+			int x0 = (sx << 4) - originX;
+			int y0 = (sy << 4) - originY;
+			int z0 = (sz << 4) - originZ;
+			for (int x = x0; x < x0 + 16; x += 2) {
+				for (int z = z0; z < z0 + 16; z += 2) {
+					for (int y = y0; y < y0 + 16; y += 2) {
+						frozen.blockChanged(x, y, z);
+					}
+				}
+			}
+		}
 	}
 
 	// ------------------------------------------------------------------------------------------
@@ -1337,6 +1810,16 @@ public final class FluidSimulation implements AutoCloseable {
 
 	public int activeCount() {
 		return activeCount;
+	}
+
+	/** Particles the frozen water (still water kept as a volume) stands for. */
+	public long frozenParticles() {
+		return frozen != null ? frozen.frozenParticles() : 0L;
+	}
+
+	/** Columns of frozen water. */
+	public int frozenColumns() {
+		return frozen != null ? frozen.columnCount() : 0;
 	}
 
 	public int capacity() {
@@ -1440,6 +1923,9 @@ public final class FluidSimulation implements AutoCloseable {
 		scanPool.shutdown();
 		playerBody.close();
 		terrain.close();
+		if (frozenCollider != null) {
+			frozenCollider.close();
+		}
 		particleSystem.removeParticleBuffer(buffer);
 		buffer.release();
 		scene.removeActor(particleSystem);
