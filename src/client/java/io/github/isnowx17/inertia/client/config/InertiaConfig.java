@@ -130,6 +130,12 @@ public final class InertiaConfig {
 	/** Whether foam and spray are simulated and drawn. */
 	public boolean foam = true;
 
+	/**
+	 * Detail of the foam: {@code "auto"} (that of the quality level; {@code "high"} with
+	 * {@code "custom"}), or {@code "low"}, {@code "medium"}, {@code "high"} or {@code "ultra"}.
+	 */
+	public String foamQuality = "auto";
+
 	/** How easily foam forms, 0..1. */
 	public float foamAmount = 0.35f;
 
@@ -161,6 +167,11 @@ public final class InertiaConfig {
 
 	/** Vorticity confinement: keeps swirls alive. */
 	public float waterVorticity = 4f;
+
+	/** The quality level the foam's detail follows (see {@link #foamQuality}). */
+	public String effectiveFoamQuality() {
+		return "auto".equals(foamQuality) ? quality : foamQuality;
+	}
 
 	/** The settings a quality level stands for. */
 	public record Quality(float particleSpacing, int maxParticles, float surfaceCellSize, int substepsPerTick) {
@@ -265,6 +276,11 @@ public final class InertiaConfig {
 		if (!quality.equals("low") && !quality.equals("medium") && !quality.equals("high")
 			&& !quality.equals("ultra") && !quality.equals(QUALITY_CUSTOM)) {
 			quality = "ultra";
+		}
+		foamQuality = foamQuality == null ? "auto" : foamQuality.toLowerCase(Locale.ROOT);
+		if (!foamQuality.equals("low") && !foamQuality.equals("medium") && !foamQuality.equals("high")
+			&& !foamQuality.equals("ultra")) {
+			foamQuality = "auto";
 		}
 		particleSpacing = clamp(orDefault(particleSpacing, 0.1f), 0.05f, 0.25f);
 		maxParticles = clamp(maxParticles, 4_096, 2_097_152);
