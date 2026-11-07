@@ -57,6 +57,9 @@ final class TerrainCollider implements AutoCloseable {
 	private final Long2ObjectMap<PxRigidStatic> built = new Long2ObjectOpenHashMap<>();
 	private final Long2LongMap lastNeeded = new Long2LongOpenHashMap();
 	private final LongSet dirty = new LongOpenHashSet();
+	/** What the geometry of every built section was made from, to notice a change that changes nothing. */
+	private final Long2LongMap signatures = new Long2LongOpenHashMap();
+	private boolean geometryChanged;
 
 	private int originX;
 	private int originY;
@@ -77,10 +80,7 @@ final class TerrainCollider implements AutoCloseable {
 	}
 
 	void markBlockDirty(BlockPos pos) {
-		long key = SectionPos.asLong(pos.getX() >> 4, pos.getY() >> 4, pos.getZ() >> 4);
-		if (built.containsKey(key)) {
-			dirty.add(key);
-		}
+		markSectionDirty(pos.getX() >> 4, pos.getY() >> 4, pos.getZ() >> 4);
 	}
 
 	void markSectionDirty(int sx, int sy, int sz) {
@@ -88,6 +88,24 @@ final class TerrainCollider implements AutoCloseable {
 		if (built.containsKey(key)) {
 			dirty.add(key);
 		}
+	}
+
+	/**
+	 * Looks at the sections marked dirty (a limited number per call) without anything else being
+	 * needed from them: for sleeping water.
+	 *
+	 * @return whether the collision geometry of a section really changed
+	 */
+	boolean refreshDirty(ClientLevel level) {
+		if (dirty.isEmpty()) {
+			return false;
+		}
+		geometryChanged = false;
+		long[] keys = dirty.toLongArray();
+		for (int i = 0; i < keys.length && i < BUILD_BUDGET_PER_TICK; i++) {
+			build(level, keys[i]);
+		}
+		return geometryChanged;
 	}
 
 	int sectionCount() {
@@ -134,6 +152,7 @@ final class TerrainCollider implements AutoCloseable {
 			long key = stale.getLong(i);
 			lastNeeded.remove(key);
 			dirty.remove(key);
+			signatures.remove(key);
 			removeActor(built.remove(key));
 		}
 	}
@@ -145,7 +164,7 @@ final class TerrainCollider implements AutoCloseable {
 		int sz = SectionPos.z(key);
 
 		if (sy < level.getMinSectionY() || sy > level.getMaxSectionY()) {
-			replace(key, EMPTY);
+			replace(key, EMPTY, 0L);
 			return false;
 		}
 		if (!level.hasChunk(sx, sz)) {
@@ -155,7 +174,11 @@ final class TerrainCollider implements AutoCloseable {
 		LevelChunk chunk = level.getChunk(sx, sz);
 		LevelChunkSection section = chunk.getSection(level.getSectionIndexFromSectionY(sy));
 		if (section.hasOnlyAir()) {
-			replace(key, EMPTY);
+			if (built.containsKey(key) && signatures.get(key) == 0L) {
+				dirty.remove(key);
+				return false;
+			}
+			replace(key, EMPTY, 0L);
 			return true;
 		}
 
@@ -192,9 +215,17 @@ final class TerrainCollider implements AutoCloseable {
 			}
 		}
 
+		// Most block changes (grass spreading, crops growing, a change of light) leave the geometry as it
+		// is: then the actor stays, and the water does not notice.
+		long signature = signature(solid, partialBoxes);
+		if (built.containsKey(key) && signatures.get(key) == signature) {
+			dirty.remove(key);
+			return false;
+		}
+
 		List<int[]> merged = BoxMerger.merge(solid, SECTION_SIZE);
 		if (merged.isEmpty() && partialBoxes.isEmpty()) {
-			replace(key, EMPTY);
+			replace(key, EMPTY, signature);
 			return true;
 		}
 
@@ -227,8 +258,17 @@ final class TerrainCollider implements AutoCloseable {
 		}
 
 		scene.addActor(actor);
-		replace(key, actor);
+		replace(key, actor, signature);
 		return true;
+	}
+
+	/** A hash of what a section's collision geometry is made from; never 0 for a section with blocks. */
+	private static long signature(boolean[] solid, List<float[]> partialBoxes) {
+		long hash = java.util.Arrays.hashCode(solid);
+		for (float[] box : partialBoxes) {
+			hash = hash * 1_000_003L + java.util.Arrays.hashCode(box);
+		}
+		return (hash * 31L + partialBoxes.size()) | 1L;
 	}
 
 	private static void attachBox(
@@ -251,10 +291,12 @@ final class TerrainCollider implements AutoCloseable {
 		shape.release(); // the actor keeps its own reference
 	}
 
-	private void replace(long key, PxRigidStatic actor) {
+	private void replace(long key, PxRigidStatic actor, long signature) {
 		PxRigidStatic previous = built.put(key, actor);
+		signatures.put(key, signature);
 		dirty.remove(key);
 		removeActor(previous);
+		geometryChanged = true;
 	}
 
 	private void removeActor(PxRigidStatic actor) {
@@ -269,6 +311,7 @@ final class TerrainCollider implements AutoCloseable {
 			removeActor(actor);
 		}
 		built.clear();
+		signatures.clear();
 		lastNeeded.clear();
 		dirty.clear();
 	}

@@ -31,4 +31,25 @@ class FluidParametersTest {
 		assertThrows(IllegalArgumentException.class, () -> FluidParameters.forSpacing(2f));
 		assertThrows(IllegalArgumentException.class, () -> FluidParameters.forSpacing(Float.NaN));
 	}
+
+	@Test
+	void solverLevelsGetCheaperAndKeepAtLeastTwoSubSteps() {
+		for (int substeps = 1; substeps <= 8; substeps++) {
+			FluidParameters.SolverLevel[] levels = FluidParameters.solverLevels(substeps);
+			assertEquals(substeps, levels[0].substeps(), "the first level is the normal setting");
+			assertEquals(FluidParameters.POSITION_ITERATIONS, levels[0].iterations());
+			assertEquals(1f, levels[0].cost());
+			for (int i = 1; i < levels.length; i++) {
+				assertTrue(levels[i].substeps() < levels[i - 1].substeps(), "fewer sub-steps");
+				assertTrue(levels[i].substeps() >= 2, "sub-steps of 25 ms at most");
+				assertTrue(levels[i].cost() < levels[i - 1].cost(), "cheaper");
+			}
+		}
+		assertEquals(2, FluidParameters.solverLevels(4).length);
+		assertEquals(3, FluidParameters.solverLevels(4)[1].substeps());
+		assertEquals(4, FluidParameters.solverLevels(4)[1].iterations());
+		assertEquals(2, FluidParameters.solverLevels(3)[1].substeps());
+		assertEquals(6, FluidParameters.solverLevels(3)[1].iterations());
+		assertEquals(1, FluidParameters.solverLevels(2).length);
+	}
 }

@@ -11,8 +11,8 @@ import com.mojang.renderpearl.api.pipeline.BindGroupLayout;
 import com.mojang.renderpearl.api.pipeline.BlendFunction;
 import com.mojang.renderpearl.api.pipeline.ColorTargetState;
 import com.mojang.renderpearl.api.pipeline.CompareOp;
-import com.mojang.renderpearl.api.pipeline.DepthStencilState;
 import com.mojang.renderpearl.api.pipeline.CompiledRenderPipeline;
+import com.mojang.renderpearl.api.pipeline.DepthStencilState;
 import com.mojang.renderpearl.api.pipeline.IndexType;
 import com.mojang.renderpearl.api.pipeline.PrimitiveTopology;
 import com.mojang.renderpearl.api.pipeline.RenderPipeline;
@@ -26,7 +26,6 @@ import io.github.isnowx17.inertia.Inertia;
 import io.github.isnowx17.inertia.util.SurfaceFoam;
 import io.github.isnowx17.inertia.util.WaterVertexLayout;
 import java.nio.ByteBuffer;
-import java.util.List;
 import java.util.Optional;
 import java.util.OptionalDouble;
 import net.minecraft.client.Minecraft;
@@ -40,7 +39,7 @@ import org.joml.Vector4f;
 
 /**
  * Draws the water surface with Inertia's own shader in a render pass of its own, after the main
- * level pass.
+ * level pass, and the spray and droplets on top of it.
  *
  * <p>Right before drawing, the colour and depth of the finished scene are copied into textures the
  * shader samples: that is what makes refraction and depth-dependent absorption possible (the water
@@ -50,10 +49,17 @@ import org.joml.Vector4f;
  *
  * <p>The water surface itself stays on the GPU: its vertices ({@link WaterVertexLayout}) and its
  * triangle indices are uploaded only when the surface changes, and the vertex shader moves them
- * along their flow velocity every frame.
+ * along their flow velocity every frame. Seen from outside the water, the faces turned away from the
+ * camera are skipped. Seen from inside or right next to the water all faces are needed, and then
+ * the surface is drawn twice: first only its depth, then the water shader where the depth matches,
+ * so the expensive shading still runs only once per pixel.
  *
- * <p>If the shader fails to compile on a machine, {@link #isAvailable()} turns false and the
- * renderer falls back to the vanilla entity pipeline.
+ * <p>Spray and droplets stay on the GPU too: one {@link #PARTICLE_FORMAT} instance per particle,
+ * uploaded once per simulation step and turned into camera-facing quads by
+ * {@code water_particle.vsh}, shaded by vanilla's entity shader.
+ *
+ * <p>If a shader fails to compile on a machine, {@link #isAvailable()} turns false and the renderer
+ * falls back to the vanilla entity pipeline.
  */
 public final class WaterPass implements AutoCloseable {
 	private static final BindGroupLayout SCENE_SAMPLERS = BindGroupLayout.builder()
@@ -72,55 +78,79 @@ public final class WaterPass implements AutoCloseable {
 		.addAttribute("Normal", GpuFormat.RGBA8_SNORM)
 		.build();
 
-	public static final RenderPipeline PIPELINE = RenderPipeline.builder(RenderPipelines.ENTITY_SNIPPET)
-		.withLocation(Inertia.id("pipeline/water"))
-		.withVertexShader(Inertia.id("core/water"))
-		.withFragmentShader(Inertia.id("core/water"))
-		.withBindGroupLayout(SCENE_SAMPLERS)
-		.withVertexBinding(0, SURFACE_FORMAT)
-		.withPrimitiveTopology(PrimitiveTopology.TRIANGLES)
-		.withColorTargetState(new ColorTargetState(BlendFunction.TRANSLUCENT))
-		.withCull(false)
+	/**
+	 * One instance per spray particle or droplet (water_particle.vsh): position when the simulation
+	 * data was taken and flow velocity (relative to the water's origin), remaining life (spray) and
+	 * block and sky light packed like vanilla.
+	 */
+	public static final VertexFormat PARTICLE_FORMAT = VertexFormat.builder(1)
+		.addAttribute("Position", GpuFormat.RGB32_FLOAT)
+		.addAttribute("Velocity", GpuFormat.RGB32_FLOAT)
+		.addAttribute("Life", GpuFormat.R32_FLOAT)
+		.addAttribute("UV2", GpuFormat.RG16_SINT)
 		.build();
+	public static final int PARTICLE_POSITION = 0;
+	public static final int PARTICLE_VELOCITY = 12;
+	public static final int PARTICLE_LIFE = 24;
+	public static final int PARTICLE_LIGHT = 28;
+	public static final int PARTICLE_STRIDE = 32;
+
+	/** The water shader where {@link #DEPTH_PIPELINE} left the nearest water's depth (no depth writes of its own). */
+	public static final RenderPipeline PIPELINE = surfacePipeline("pipeline/water", false, new DepthStencilState(CompareOp.GREATER_THAN_OR_EQUAL, false));
 
 	/**
 	 * The same, without the faces turned away from the camera. Seen from outside the water those are
 	 * the inner sides of the surface (a pool's floor seen through its top), always hidden behind a
-	 * front face, so skipping them halves the shading work.
+	 * front face, so skipping them halves the shading work. Needs no depth pre-pass.
 	 */
-	public static final RenderPipeline PIPELINE_CULLED = RenderPipeline.builder(RenderPipelines.ENTITY_SNIPPET)
-		.withLocation(Inertia.id("pipeline/water_culled"))
+	public static final RenderPipeline PIPELINE_CULLED = surfacePipeline("pipeline/water_culled", true, DepthStencilState.DEFAULT);
+
+	/** Depth pre-pass of the surface: the nearest water's depth, no colour. */
+	public static final RenderPipeline DEPTH_PIPELINE = RenderPipeline.builder(RenderPipelines.ENTITY_SNIPPET)
+		.withLocation(Inertia.id("pipeline/water_depth"))
 		.withVertexShader(Inertia.id("core/water"))
-		.withFragmentShader(Inertia.id("core/water"))
-		.withBindGroupLayout(SCENE_SAMPLERS)
+		.withFragmentShader(Inertia.id("core/water_depth"))
 		.withVertexBinding(0, SURFACE_FORMAT)
 		.withPrimitiveTopology(PrimitiveTopology.TRIANGLES)
-		.withColorTargetState(new ColorTargetState(BlendFunction.TRANSLUCENT))
-		.withCull(true)
+		.withColorTargetState(new ColorTargetState(Optional.empty(), GpuFormat.RGBA8_UNORM, ColorTargetState.WRITE_NONE))
+		.withCull(false)
+		.withDepthStencilState(DepthStencilState.DEFAULT)
 		.build();
 
 	/**
-	 * Foam and spray drawn on top of the water: the vanilla translucent entity shader, depth-tested
-	 * but without depth writes. Drawing them after the water makes their soft edges blend with the
-	 * water instead of the ground below it.
+	 * Spray and droplets drawn on top of the water: quads built from {@link #PARTICLE_FORMAT}
+	 * instances and shaded by the vanilla translucent entity shader, depth-tested but without depth
+	 * writes. Drawing them after the water makes their soft edges blend with the water instead of
+	 * the ground below it.
 	 */
-	public static final RenderPipeline OVERLAY_PIPELINE = RenderPipeline.builder(RenderPipelines.ENTITY_SNIPPET)
-		.withLocation(Inertia.id("pipeline/water_overlay"))
+	public static final RenderPipeline PARTICLE_PIPELINE = RenderPipeline.builder(RenderPipelines.ENTITY_SNIPPET)
+		.withLocation(Inertia.id("pipeline/water_particles"))
+		.withVertexShader(Inertia.id("core/water_particle"))
 		.withShaderDefine("ALPHA_CUTOUT", 0.1F)
 		.withShaderDefine("PER_FACE_LIGHTING")
 		.withBindGroupLayout(BindGroupLayouts.SAMPLER1)
+		.withVertexBinding(0, PARTICLE_FORMAT)
 		.withColorTargetState(new ColorTargetState(BlendFunction.TRANSLUCENT))
 		.withCull(false)
 		.withDepthStencilState(new DepthStencilState(CompareOp.GREATER_THAN_OR_EQUAL, false))
 		.build();
 
-	private static final Identifier SURFACE_TEXTURE = Inertia.id("textures/fluid/surface.png");
-	/** Vertex data offsets in the shared buffer are aligned to this many bytes. */
-	private static final int ALIGNMENT = 256;
-
-	/** Quads drawn on top of the water with {@link #OVERLAY_PIPELINE}. */
-	public record Overlay(ByteBuffer vertices, int indexCount, Identifier texture) {
+	private static RenderPipeline surfacePipeline(String location, boolean cull, DepthStencilState depth) {
+		return RenderPipeline.builder(RenderPipelines.ENTITY_SNIPPET)
+			.withLocation(Inertia.id(location))
+			.withVertexShader(Inertia.id("core/water"))
+			.withFragmentShader(Inertia.id("core/water"))
+			.withBindGroupLayout(SCENE_SAMPLERS)
+			.withVertexBinding(0, SURFACE_FORMAT)
+			.withPrimitiveTopology(PrimitiveTopology.TRIANGLES)
+			.withColorTargetState(new ColorTargetState(BlendFunction.TRANSLUCENT))
+			.withCull(cull)
+			.withDepthStencilState(depth)
+			.build();
 	}
+
+	private static final Identifier SURFACE_TEXTURE = Inertia.id("textures/fluid/surface.png");
+	private static final Identifier PARTICLE_TEXTURE = Inertia.id("textures/fluid/spray.png");
 
 	/**
 	 * A water surface: vertices in {@link WaterVertexLayout}, 32-bit triangle indices. Uploaded only
@@ -131,6 +161,23 @@ public final class WaterPass implements AutoCloseable {
 	public record Surface(ByteBuffer vertices, int vertexCount, ByteBuffer indices, int indexCount, long serial, boolean cullBackFaces) {
 	}
 
+	/**
+	 * Spray and droplets: {@code dropletCount} {@link #PARTICLE_FORMAT} instances from the start of
+	 * {@code data}, {@code sprayCount} more from {@code sprayOffset} (bytes). Uploaded only when
+	 * {@code serial} differs from the particles already on the GPU.
+	 *
+	 * @param dropletParameters TextureMat for the droplets, see {@code water_particle.vsh}
+	 * @param sprayParameters   TextureMat for the spray
+	 */
+	public record Particles(
+		ByteBuffer data, int dropletCount, int sprayOffset, int sprayCount, long serial,
+		Matrix4f dropletParameters, Matrix4f sprayParameters
+	) {
+		boolean isEmpty() {
+			return dropletCount <= 0 && sprayCount <= 0;
+		}
+	}
+
 	private enum Status { UNKNOWN, AVAILABLE, FAILED }
 
 	private Status status = Status.UNKNOWN;
@@ -138,10 +185,11 @@ public final class WaterPass implements AutoCloseable {
 	private GpuTextureView sceneColorView;
 	private GpuTexture sceneDepth;
 	private GpuTextureView sceneDepthView;
-	private GpuBuffer vertexBuffer;
 	private GpuBuffer surfaceVertices;
 	private GpuBuffer surfaceIndices;
 	private long uploadedSurface = Long.MIN_VALUE;
+	private GpuBuffer particleBuffer;
+	private long uploadedParticles = Long.MIN_VALUE;
 	private GpuTexture foamTexture;
 	private GpuTextureView foamView;
 	private SurfaceFoam.Map uploadedFoam;
@@ -150,27 +198,27 @@ public final class WaterPass implements AutoCloseable {
 	private GpuTexture emptyFoamTexture;
 	private GpuTextureView emptyFoamView;
 
-	/** Registers the pipeline so it is compiled with the other shaders on every resource reload. */
+	/** Registers the pipelines so they are compiled with the other shaders on every resource reload. */
 	public static void register() {
 		RenderPipelines.registerOptional(PIPELINE);
 		RenderPipelines.registerOptional(PIPELINE_CULLED);
-		RenderPipelines.registerOptional(OVERLAY_PIPELINE);
+		RenderPipelines.registerOptional(DEPTH_PIPELINE);
+		RenderPipelines.registerOptional(PARTICLE_PIPELINE);
 	}
 
-	/** Whether the water shader compiled on this machine. Checked once, on the render thread. */
+	/** Whether the water shaders compiled on this machine. Checked once, on the render thread. */
 	public boolean isAvailable() {
 		if (status == Status.UNKNOWN) {
-			CompiledRenderPipeline compiled = null;
-			CompiledRenderPipeline culled = null;
-			CompiledRenderPipeline overlay = null;
+			boolean compiled = false;
 			try {
-				compiled = RenderSystem.getCompiledPipelineNullable(PIPELINE);
-				culled = RenderSystem.getCompiledPipelineNullable(PIPELINE_CULLED);
-				overlay = RenderSystem.getCompiledPipelineNullable(OVERLAY_PIPELINE);
+				compiled = RenderSystem.getCompiledPipelineNullable(PIPELINE) != null
+					&& RenderSystem.getCompiledPipelineNullable(PIPELINE_CULLED) != null
+					&& RenderSystem.getCompiledPipelineNullable(DEPTH_PIPELINE) != null
+					&& RenderSystem.getCompiledPipelineNullable(PARTICLE_PIPELINE) != null;
 			} catch (RuntimeException e) {
 				Inertia.LOGGER.error("Inertia water shader could not be compiled", e);
 			}
-			status = compiled != null && culled != null && overlay != null && layoutMatches() ? Status.AVAILABLE : Status.FAILED;
+			status = compiled && layoutMatches() ? Status.AVAILABLE : Status.FAILED;
 			if (status == Status.FAILED) {
 				Inertia.LOGGER.warn("Inertia water shader unavailable; using the simple water rendering");
 			} else {
@@ -180,7 +228,7 @@ public final class WaterPass implements AutoCloseable {
 		return status == Status.AVAILABLE;
 	}
 
-	/** Whether {@link #SURFACE_FORMAT} has exactly the offsets the renderer writes. */
+	/** Whether {@link #SURFACE_FORMAT} and {@link #PARTICLE_FORMAT} have exactly the offsets the renderer writes. */
 	private static boolean layoutMatches() {
 		var elements = SURFACE_FORMAT.getElements();
 		var attributes = WaterVertexLayout.ATTRIBUTES;
@@ -193,8 +241,14 @@ public final class WaterPass implements AutoCloseable {
 			VertexFormatElement element = elements.get(i);
 			ok = element.name().equals(attributes.get(i).name()) && element.offset() == offsets[i];
 		}
+		var particleElements = PARTICLE_FORMAT.getElements();
+		int[] particleOffsets = {PARTICLE_POSITION, PARTICLE_VELOCITY, PARTICLE_LIFE, PARTICLE_LIGHT};
+		ok &= PARTICLE_FORMAT.getVertexSize() == PARTICLE_STRIDE && particleElements.size() == particleOffsets.length;
+		for (int i = 0; ok && i < particleElements.size(); i++) {
+			ok = particleElements.get(i).offset() == particleOffsets[i];
+		}
 		if (!ok) {
-			Inertia.LOGGER.error("Inertia water vertex format does not match its layout: {}", SURFACE_FORMAT);
+			Inertia.LOGGER.error("Inertia water vertex formats do not match their layout: {} / {}", SURFACE_FORMAT, PARTICLE_FORMAT);
 		}
 		return ok;
 	}
@@ -214,21 +268,26 @@ public final class WaterPass implements AutoCloseable {
 	}
 
 	/**
-	 * Copies the scene, draws the water surface with the water shader and then the overlays
-	 * (droplets, spray) on top, which use the {@code ENTITY} format.
+	 * Copies the scene, draws the water surface with the water shader and then the spray and droplets
+	 * on top.
 	 *
 	 * @param surface      the water surface, or {@code null} for none
-	 * @param overlays     quads drawn after the water, in order
+	 * @param particles    spray and droplets, or {@code null} for none
 	 * @param foam         foam map for this frame, or {@code null} without foam
 	 * @param sunDirection world-space direction towards the sun
 	 * @param daylight     0 at night, 1 at noon
-	 * @param originOffset the surface's origin relative to the camera
+	 * @param originOffset the water's origin relative to the camera
 	 * @param parameters   shader parameters, see {@code water.vsh}
 	 */
 	public void draw(
-		Surface surface, List<Overlay> overlays, SurfaceFoam.Map foam,
+		Surface surface, Particles particles, SurfaceFoam.Map foam,
 		Vector3f sunDirection, float daylight, Vector3f originOffset, Matrix4f parameters
 	) {
+		boolean drawSurface = surface != null && surface.indexCount() > 0 && surface.vertexCount() > 0;
+		boolean drawParticles = particles != null && !particles.isEmpty();
+		if (!drawSurface && !drawParticles) {
+			return;
+		}
 		Minecraft minecraft = Minecraft.getInstance();
 		RenderTarget main = minecraft.gameRenderer.mainRenderTarget();
 		GpuTexture color = main.getColorTexture();
@@ -238,55 +297,43 @@ public final class WaterPass implements AutoCloseable {
 		}
 
 		CommandEncoder encoder = RenderSystem.getDevice().createCommandEncoder();
-		ensureSceneTextures(color, depth);
-		int width = color.getWidth(0);
-		int height = color.getHeight(0);
-		encoder.copyTextureToTexture(color, sceneColor, 0, 0, 0, 0, 0, width, height);
-		encoder.copyTextureToTexture(depth, sceneDepth, 0, 0, 0, 0, 0, width, height);
-		GpuTextureView foamMap = foamView(encoder, foam);
-
-		// The surface is uploaded only when it changed.
-		boolean drawSurface = surface != null && surface.indexCount() > 0 && surface.vertexCount() > 0;
-		if (drawSurface && surface.serial() != uploadedSurface) {
-			uploadSurface(encoder, surface);
-		}
-
-		// Upload the overlay vertex data into one buffer.
-		long[] overlayOffsets = new long[overlays.size()];
-		long total = 0;
-		int maxIndices = 0;
-		for (int i = 0; i < overlays.size(); i++) {
-			overlayOffsets[i] = total;
-			total += align(overlays.get(i).vertices().remaining());
-			maxIndices = Math.max(maxIndices, overlays.get(i).indexCount());
-		}
-		ensureVertexCapacity(Math.max(total, ALIGNMENT));
-		for (int i = 0; i < overlays.size(); i++) {
-			ByteBuffer data = overlays.get(i).vertices();
-			int bytes = data.remaining();
-			if (bytes > 0) {
-				encoder.writeToBuffer(vertexBuffer.slice(overlayOffsets[i], bytes), data);
+		GpuTextureView foamMap = null;
+		if (drawSurface) {
+			// Only the water shader reads the scene; spray and droplets alone do not need the copies.
+			ensureSceneTextures(color, depth);
+			int width = color.getWidth(0);
+			int height = color.getHeight(0);
+			encoder.copyTextureToTexture(color, sceneColor, 0, 0, 0, 0, 0, width, height);
+			encoder.copyTextureToTexture(depth, sceneDepth, 0, 0, 0, 0, 0, width, height);
+			foamMap = foamView(encoder, foam);
+			// The surface is uploaded only when it changed.
+			if (surface.serial() != uploadedSurface) {
+				uploadSurface(encoder, surface);
 			}
+		}
+		if (drawParticles && particles.serial() != uploadedParticles) {
+			uploadParticles(encoder, particles);
 		}
 
 		RenderSystem.AutoStorageIndexBuffer quadIndices = RenderSystem.getSequentialBuffer(PrimitiveTopology.QUADS);
-		GpuBuffer quadIndexBuffer = quadIndices.getBuffer(Math.max(maxIndices, 6));
+		GpuBuffer quadIndexBuffer = quadIndices.getBuffer(6);
 		Matrix4f modelView = RenderSystem.getModelViewMatrixCopy();
-		GpuBufferSlice waterTransforms = RenderSystem.getDynamicUniforms().writeTransform(
-			modelView,
-			new Vector4f(sunDirection.x, sunDirection.y, sunDirection.z, daylight),
-			originOffset,
-			parameters
-		);
-		GpuBufferSlice overlayTransforms = RenderSystem.getDynamicUniforms().writeTransform(modelView);
+		var uniforms = RenderSystem.getDynamicUniforms();
+		GpuBufferSlice waterTransforms = drawSurface
+			? uniforms.writeTransform(modelView, new Vector4f(sunDirection.x, sunDirection.y, sunDirection.z, daylight), originOffset, parameters)
+			: null;
+		Vector4f white = new Vector4f(1f, 1f, 1f, 1f);
+		GpuBufferSlice dropletTransforms = drawParticles && particles.dropletCount() > 0
+			? uniforms.writeTransform(modelView, white, originOffset, particles.dropletParameters())
+			: null;
+		GpuBufferSlice sprayTransforms = drawParticles && particles.sprayCount() > 0
+			? uniforms.writeTransform(modelView, white, originOffset, particles.sprayParameters())
+			: null;
 
 		// Resolve every texture before the pass opens: the first lookup of a texture uploads it, and
 		// uploads are not allowed while a render pass is open.
 		AbstractTexture surfaceTexture = minecraft.getTextureManager().getTexture(SURFACE_TEXTURE);
-		AbstractTexture[] overlayTextures = new AbstractTexture[overlays.size()];
-		for (int i = 0; i < overlays.size(); i++) {
-			overlayTextures[i] = minecraft.getTextureManager().getTexture(overlays.get(i).texture());
-		}
+		AbstractTexture particleTexture = minecraft.getTextureManager().getTexture(PARTICLE_TEXTURE);
 		var samplers = RenderSystem.getSamplerCache();
 
 		try (RenderPass pass = encoder.createRenderPass(
@@ -295,33 +342,49 @@ public final class WaterPass implements AutoCloseable {
 			RenderSystem.bindDefaultUniforms(pass);
 
 			if (drawSurface) {
-				pass.setPipeline(RenderSystem.getCompiledPipeline(surface.cullBackFaces() ? PIPELINE_CULLED : PIPELINE));
+				GpuBufferSlice vertices = surfaceVertices.slice(0, (long) surface.vertexCount() * WaterVertexLayout.STRIDE);
+				boolean cull = surface.cullBackFaces();
+
+				// With all faces drawn: first the depth of the nearest water surface.
+				if (!cull) {
+					pass.setPipeline(RenderSystem.getCompiledPipeline(DEPTH_PIPELINE));
+					pass.setUniform("DynamicTransforms", waterTransforms);
+					pass.setUniform("Sampler0", surfaceTexture.getTextureView(), surfaceTexture.getSampler());
+					pass.setUniform("Sampler2", minecraft.gameRenderer.lightmap(), samplers.getClampToEdge(FilterMode.LINEAR));
+					pass.setVertexBuffer(0, vertices);
+					pass.setIndexBuffer(surfaceIndices, IndexType.INT);
+					pass.drawIndexed(surface.indexCount(), 1, 0, 0, 0);
+				}
+
+				// The water shader (with the pre-pass only where that depth is).
+				pass.setPipeline(RenderSystem.getCompiledPipeline(cull ? PIPELINE_CULLED : PIPELINE));
 				pass.setUniform("DynamicTransforms", waterTransforms);
 				pass.setUniform("Sampler0", surfaceTexture.getTextureView(), surfaceTexture.getSampler());
 				pass.setUniform("Sampler2", minecraft.gameRenderer.lightmap(), samplers.getClampToEdge(FilterMode.LINEAR));
 				pass.setUniform("SceneColor", sceneColorView, samplers.getClampToEdge(FilterMode.LINEAR));
 				pass.setUniform("SceneDepth", sceneDepthView, samplers.getClampToEdge(FilterMode.NEAREST));
 				pass.setUniform("FoamMap", foamMap, samplers.getClampToEdge(FilterMode.LINEAR, true));
-				pass.setVertexBuffer(0, surfaceVertices.slice(0, (long) surface.vertexCount() * WaterVertexLayout.STRIDE));
+				pass.setVertexBuffer(0, vertices);
 				pass.setIndexBuffer(surfaceIndices, IndexType.INT);
 				pass.drawIndexed(surface.indexCount(), 1, 0, 0, 0);
 			}
 
-			if (!overlays.isEmpty()) {
-				pass.setPipeline(RenderSystem.getCompiledPipeline(OVERLAY_PIPELINE));
+			if (drawParticles) {
+				pass.setPipeline(RenderSystem.getCompiledPipeline(PARTICLE_PIPELINE));
 				pass.setIndexBuffer(quadIndexBuffer, quadIndices.type());
-				pass.setUniform("DynamicTransforms", overlayTransforms);
+				pass.setUniform("Sampler0", particleTexture.getTextureView(), particleTexture.getSampler());
 				pass.setUniform("Sampler1", minecraft.gameRenderer.overlayTexture().getTextureView(), samplers.getClampToEdge(FilterMode.LINEAR));
 				pass.setUniform("Sampler2", minecraft.gameRenderer.lightmap(), samplers.getClampToEdge(FilterMode.LINEAR));
-				for (int i = 0; i < overlays.size(); i++) {
-					Overlay overlay = overlays.get(i);
-					if (overlay.indexCount() == 0 || overlay.vertices().remaining() == 0) {
-						continue;
-					}
-					AbstractTexture texture = overlayTextures[i];
-					pass.setUniform("Sampler0", texture.getTextureView(), texture.getSampler());
-					pass.setVertexBuffer(0, vertexBuffer.slice(overlayOffsets[i], overlay.vertices().remaining()));
-					pass.drawIndexed(overlay.indexCount(), 1, 0, 0, 0);
+				// Droplets first, then spray, as one camera-facing quad (six indices) per instance.
+				if (dropletTransforms != null) {
+					pass.setUniform("DynamicTransforms", dropletTransforms);
+					pass.setVertexBuffer(0, particleBuffer.slice(0, (long) particles.dropletCount() * PARTICLE_STRIDE));
+					pass.drawIndexed(6, particles.dropletCount(), 0, 0, 0);
+				}
+				if (sprayTransforms != null) {
+					pass.setUniform("DynamicTransforms", sprayTransforms);
+					pass.setVertexBuffer(0, particleBuffer.slice(particles.sprayOffset(), (long) particles.sprayCount() * PARTICLE_STRIDE));
+					pass.drawIndexed(6, particles.sprayCount(), 0, 0, 0);
 				}
 			}
 		}
@@ -351,6 +414,22 @@ public final class WaterPass implements AutoCloseable {
 		uploadedSurface = surface.serial();
 	}
 
+	/** Copies new spray and droplet instances into the GPU buffer (grown by doubling when too small). */
+	private void uploadParticles(CommandEncoder encoder, Particles particles) {
+		long bytes = particles.sprayCount() > 0
+			? particles.sprayOffset() + (long) particles.sprayCount() * PARTICLE_STRIDE
+			: (long) particles.dropletCount() * PARTICLE_STRIDE;
+		if (particleBuffer == null || particleBuffer.size() < bytes) {
+			if (particleBuffer != null) {
+				particleBuffer.close();
+			}
+			particleBuffer = RenderSystem.getDevice().createBuffer(() -> "Inertia spray and droplets",
+				GpuBuffer.USAGE_VERTEX | GpuBuffer.USAGE_COPY_DST, Math.max(1L << 18, Long.highestOneBit(bytes) << 1));
+		}
+		encoder.writeToBuffer(particleBuffer.slice(0, bytes), particles.data().duplicate().position(0).limit((int) bytes));
+		uploadedParticles = particles.serial();
+	}
+
 	/** Uploads a new foam map (all mip levels) if it changed; returns the view to bind. */
 	private GpuTextureView foamView(CommandEncoder encoder, SurfaceFoam.Map map) {
 		var device = RenderSystem.getDevice();
@@ -377,13 +456,20 @@ public final class WaterPass implements AutoCloseable {
 				int w = map.width >> level;
 				int h = map.height >> level;
 				int bytes = w * h * 2;
-				if (foamUpload == null || foamUpload.capacity() < bytes) {
-					foamUpload = ByteBuffer.allocateDirect(Math.max(bytes, 1 << 16));
+				ByteBuffer data;
+				if (map.direct != null && map.direct.capacity() >= map.offsets[level] + bytes) {
+					// Filled by the surface job: no copy on the render thread.
+					data = map.direct.duplicate().limit(map.offsets[level] + bytes).position(map.offsets[level]);
+				} else {
+					if (foamUpload == null || foamUpload.capacity() < bytes) {
+						foamUpload = ByteBuffer.allocateDirect(Math.max(bytes, 1 << 16));
+					}
+					foamUpload.clear();
+					foamUpload.put(map.data, map.offsets[level], bytes);
+					foamUpload.flip();
+					data = foamUpload;
 				}
-				foamUpload.clear();
-				foamUpload.put(map.data, map.offsets[level], bytes);
-				foamUpload.flip();
-				encoder.writeToTexture(foamTexture, foamUpload, level, 0, 0, 0, w, h);
+				encoder.writeToTexture(foamTexture, data, level, 0, 0, 0, w, h);
 			}
 			uploadedFoam = map;
 			uploadedFoamVersion = map.version;
@@ -401,10 +487,6 @@ public final class WaterPass implements AutoCloseable {
 		uploadedFoam = null;
 	}
 
-	private static long align(long bytes) {
-		return (bytes + ALIGNMENT - 1) / ALIGNMENT * ALIGNMENT;
-	}
-
 	private void ensureSceneTextures(GpuTexture color, GpuTexture depth) {
 		int width = color.getWidth(0);
 		int height = color.getHeight(0);
@@ -419,18 +501,6 @@ public final class WaterPass implements AutoCloseable {
 		sceneColorView = device.createTextureView(sceneColor);
 		sceneDepth = device.createTexture("Inertia scene depth", usage, depth.getFormat(), width, height, 1, 1);
 		sceneDepthView = device.createTextureView(sceneDepth);
-	}
-
-	private void ensureVertexCapacity(long bytes) {
-		if (vertexBuffer != null && vertexBuffer.size() >= bytes) {
-			return;
-		}
-		if (vertexBuffer != null) {
-			vertexBuffer.close();
-		}
-		long size = Math.max(1L << 20, Long.highestOneBit(Math.max(1L, bytes)) << 1);
-		vertexBuffer = RenderSystem.getDevice().createBuffer(
-			() -> "Inertia water vertices", GpuBuffer.USAGE_VERTEX | GpuBuffer.USAGE_COPY_DST, size);
 	}
 
 	private void closeSceneTextures() {
@@ -459,15 +529,16 @@ public final class WaterPass implements AutoCloseable {
 			surfaceIndices = null;
 		}
 		uploadedSurface = Long.MIN_VALUE;
+		if (particleBuffer != null) {
+			particleBuffer.close();
+			particleBuffer = null;
+		}
+		uploadedParticles = Long.MIN_VALUE;
 		if (emptyFoamView != null) {
 			emptyFoamView.close();
 			emptyFoamTexture.close();
 			emptyFoamView = null;
 			emptyFoamTexture = null;
-		}
-		if (vertexBuffer != null) {
-			vertexBuffer.close();
-			vertexBuffer = null;
 		}
 	}
 }

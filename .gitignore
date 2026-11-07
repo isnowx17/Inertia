@@ -6,6 +6,8 @@ classes/
 
 # Loom / IDE
 run/
+run-benchmark/
+logs/
 .idea/
 *.iml
 *.ipr

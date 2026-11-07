@@ -32,6 +32,11 @@ base {
 	archivesName = 'inertia'
 }
 
+sourceSets {
+	// Development benchmark; its classpath is set up below, once Loom created the client source set.
+	benchmark
+}
+
 repositories {
 	mavenCentral()
 
@@ -57,7 +62,30 @@ loom {
 			sourceSet sourceSets.main
 			sourceSet sourceSets.client
 		}
+		"inertia_benchmark" {
+			sourceSet sourceSets.benchmark
+		}
 	}
+
+	runs {
+		// Development benchmark (src/benchmark, never part of the mod jar): plays a fixed water
+		// scene and writes frame times to run-benchmark/benchmark/<label>.json.
+		//   ./gradlew runBenchmark -PbenchLabel=before
+		benchmark {
+			client()
+			name = 'Benchmark'
+			source sourceSets.benchmark
+			runDir 'run-benchmark'
+			vmArg "-Dinertia.benchmark=${findProperty('benchLabel') ?: 'run'}"
+			vmArg "-Dinertia.benchmark.scene=${findProperty('benchScene') ?: 'heavy'}"
+			programArgs '--width', '1920', '--height', '1080'
+		}
+	}
+}
+
+sourceSets.benchmark {
+	compileClasspath += sourceSets.client.compileClasspath + sourceSets.client.output + sourceSets.main.output
+	runtimeClasspath += sourceSets.client.runtimeClasspath + sourceSets.client.output + sourceSets.main.output
 }
 
 configurations {

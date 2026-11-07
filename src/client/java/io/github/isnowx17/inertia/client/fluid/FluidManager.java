@@ -15,6 +15,14 @@ import net.minecraft.world.phys.Vec3;
  * Owns the fluid simulation of the current level and connects it to the game: ticking, level
  * changes, block updates, the bucket and user feedback.
  *
+ * <p>The game never waits for the GPU: when the physics step of the previous tick is still running
+ * at a game tick, the water's part of that tick is done on the first frame after the step finished
+ * ({@link #onFrame}). Water poured with the bucket meanwhile is added then too. The simulation keeps
+ * its steps shorter than a tick by choosing a cheaper solver when it has to; when even that is not
+ * enough new water replaces calm water instead of adding to it ({@link InertiaConfig#keepRealTime}),
+ * so the water keeps flowing in real time. Should it fall behind all the same, ticks are merged and
+ * the renderer follows the slower water ({@link FluidSimulation#timeScale()}).
+ *
  * <p>All methods must be called on the client thread.
  */
 public final class FluidManager {
@@ -27,12 +35,27 @@ public final class FluidManager {
 	private final java.util.List<Source> sources = new java.util.ArrayList<>();
 	private long lastSourceToggle = Long.MIN_VALUE / 2;
 	private static final int MAX_SOURCES = 16;
+	/** A game tick came while the physics step was running; it is simulated once the step is done. */
+	private boolean tickPending;
+	/** Game time the player was last told that the GPU cannot simulate more water. */
+	private long lastGpuLimitMessage = Long.MIN_VALUE / 2;
+	/** Ticks between two of those messages. */
+	private static final long GPU_LIMIT_MESSAGE_INTERVAL = 60;
+	/** Water poured while a step was running: center and velocity, six values each. */
+	private final it.unimi.dsi.fastutil.doubles.DoubleArrayList pendingSpawns = new it.unimi.dsi.fastutil.doubles.DoubleArrayList();
+	/** Game ticks over which the time scale is measured. */
+	private static final int RATE_WINDOW = 20;
+	/** Per recent game tick: whether it got a physics step of its own (it was not merged into another). */
+	private final boolean[] steppedTicks = new boolean[RATE_WINDOW];
+	private int steppedTickCount = RATE_WINDOW;
+	private int rateCursor;
 	/** Ticks between two source toggles, so holding right-click does not flip a source on and off. */
 	private static final long SOURCE_TOGGLE_COOLDOWN = 15;
 	private java.util.function.Supplier<String> waterShaderStatus = () -> "off";
 
 	public FluidManager(InertiaConfig config) {
 		this.config = config;
+		java.util.Arrays.fill(steppedTicks, true);
 	}
 
 	public FluidSimulation simulation() {
@@ -86,23 +109,110 @@ public final class FluidManager {
 		}
 
 		try {
-			// A block placed into a source stops it, like filling in a water source block.
-			sources.removeIf(source -> !isOpen(current, source.cell()));
-			long[] cells = new long[sources.size()];
-			// Water further away than the despawn distance would be removed again right away.
-			double reach = Math.max(0, config.despawnDistance - 2);
-			for (int i = 0; i < cells.length; i++) {
-				Source source = sources.get(i);
-				if (Vec3.atCenterOf(source.cell()).distanceToSqr(client.player.position()) < reach * reach) {
-					simulation.fillSource(source.cell(), config.sourceFlow);
-				}
-				cells[i] = source.cell().asLong();
+			if (simulation.stepRunning()) {
+				// The GPU is still busy with the previous step: simulate this tick as soon as it is
+				// done (see onFrame) instead of making the game wait. A tick that comes while one is
+				// already waiting is merged into it.
+				recordTick(!tickPending);
+				tickPending = true;
+			} else {
+				recordTick(true);
+				simulateTick(client, current);
 			}
-			simulation.setSources(cells);
-			simulation.tick(current, client.player);
+			// The player feels the water every tick, from the newest measurement.
 			playerSubmersion = config.playerInteraction ? PlayerFluidInteraction.apply(simulation, client.player) : 0;
 		} catch (Throwable t) {
 			handleFailure(client.player, t);
+		}
+	}
+
+	/**
+	 * Called every frame: simulates a game tick that came while the physics step was running, as
+	 * soon as the step is done.
+	 */
+	public void onFrame(Minecraft client) {
+		if (!tickPending) {
+			return;
+		}
+		ClientLevel current = client.level;
+		if (simulation == null || current == null || current != level || client.player == null) {
+			tickPending = false;
+			return;
+		}
+		if (client.isPaused() || simulation.stepRunning()) {
+			return;
+		}
+		try {
+			simulateTick(client, current);
+		} catch (Throwable t) {
+			handleFailure(client.player, t);
+		}
+	}
+
+	/** The water's part of a game tick: sources, poured water, then the next physics step. */
+	private void simulateTick(Minecraft client, ClientLevel current) {
+		tickPending = false;
+		// A block placed into a source stops it, like filling in a water source block.
+		sources.removeIf(source -> !isOpen(current, source.cell()));
+		boolean full = gpuFull();
+		// At the GPU's limit new water replaces calm water: everything below is limited to what was freed.
+		int spawnWanted = pendingSpawns.size() / 6 * simulation.params().particlesPerBlock();
+		int perSource = simulation.sourceParticlesPerTick(config.sourceFlow);
+		int freed = full ? simulation.recycleCalmWater(perSource * sources.size() + spawnWanted) : Integer.MAX_VALUE;
+		int share = sources.isEmpty() ? 0 : (full ? freed * perSource / Math.max(1, perSource * sources.size() + spawnWanted) : Integer.MAX_VALUE);
+		long[] cells = new long[sources.size()];
+		// Water further away than the despawn distance would be removed again right away.
+		double reach = Math.max(0, config.despawnDistance - 2);
+		int used = 0;
+		for (int i = 0; i < cells.length; i++) {
+			Source source = sources.get(i);
+			if (share > 0 && Vec3.atCenterOf(source.cell()).distanceToSqr(client.player.position()) < reach * reach) {
+				used += simulation.fillSource(source.cell(), config.sourceFlow, share);
+			}
+			cells[i] = source.cell().asLong();
+		}
+		int spawnBudget = full ? Math.max(0, freed - used) : Integer.MAX_VALUE;
+		for (int i = 0; i + 5 < pendingSpawns.size(); i += 6) {
+			Vec3 center = new Vec3(pendingSpawns.getDouble(i), pendingSpawns.getDouble(i + 1), pendingSpawns.getDouble(i + 2));
+			Vec3 velocity = new Vec3(pendingSpawns.getDouble(i + 3), pendingSpawns.getDouble(i + 4), pendingSpawns.getDouble(i + 5));
+			int added = spawnBudget > 0 ? simulation.spawnBlock(center, velocity, spawnBudget) : 0;
+			if (full) {
+				spawnBudget -= added;
+				if (added == 0) {
+					tellGpuLimit(client.player);
+				}
+			} else if (added == 0) {
+				client.player.sendOverlayMessage(Component.translatable("message.inertia.limit_reached", simulation.limit()).withStyle(ChatFormatting.YELLOW));
+			}
+		}
+		if (full && freed == 0 && !sources.isEmpty()) {
+			tellGpuLimit(client.player);
+		}
+		pendingSpawns.clear();
+		simulation.setSources(cells);
+		simulation.setTimeScale((float) steppedTickCount / RATE_WINDOW);
+		simulation.tick(current, client.player);
+	}
+
+	/** Notes whether the latest game tick got a physics step of its own. */
+	private void recordTick(boolean stepped) {
+		if (steppedTicks[rateCursor] != stepped) {
+			steppedTickCount += stepped ? 1 : -1;
+			steppedTicks[rateCursor] = stepped;
+		}
+		rateCursor = (rateCursor + 1) % RATE_WINDOW;
+	}
+
+	/** Whether more water would make it fall behind real time, so new water has to replace old water. */
+	private boolean gpuFull() {
+		return config.keepRealTime && simulation.atGpuLimit();
+	}
+
+	private void tellGpuLimit(Player player) {
+		long now = player.level().getGameTime();
+		if (now - lastGpuLimitMessage >= GPU_LIMIT_MESSAGE_INTERVAL || now < lastGpuLimitMessage) {
+			lastGpuLimitMessage = now;
+			player.sendOverlayMessage(Component.translatable("message.inertia.gpu_limit").withStyle(ChatFormatting.YELLOW));
 		}
 	}
 
@@ -112,6 +222,16 @@ public final class FluidManager {
 			return false;
 		}
 		try {
+			if (gpuFull() || simulation.stepRunning() || tickPending) {
+				// Added with the next physics step instead of waiting for the GPU (see simulateTick).
+				pendingSpawns.add(center.x);
+				pendingSpawns.add(center.y);
+				pendingSpawns.add(center.z);
+				pendingSpawns.add(velocity.x);
+				pendingSpawns.add(velocity.y);
+				pendingSpawns.add(velocity.z);
+				return true;
+			}
 			int added = simulation.spawnBlock(center, velocity);
 			if (added == 0) {
 				player.sendOverlayMessage(Component.translatable("message.inertia.limit_reached", simulation.limit()).withStyle(ChatFormatting.YELLOW));
@@ -235,6 +355,7 @@ public final class FluidManager {
 	/** Removes all water. */
 	public int clear() {
 		sources.clear();
+		pendingSpawns.clear();
 		if (simulation == null) {
 			return 0;
 		}
@@ -265,6 +386,10 @@ public final class FluidManager {
 	private void closeSimulation() {
 		playerSubmersion = 0;
 		sources.clear();
+		pendingSpawns.clear();
+		tickPending = false;
+		java.util.Arrays.fill(steppedTicks, true);
+		steppedTickCount = RATE_WINDOW;
 		if (simulation != null) {
 			try {
 				simulation.close();

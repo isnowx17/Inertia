@@ -122,49 +122,60 @@ vec2 projectToUv(vec3 viewPosition, bool flipY) {
     return flipY ? vec2(uv.x, 1.0 - uv.y) : uv;
 }
 
+vec2 clipToUv(vec4 clip, bool flipY) {
+    vec2 uv = clip.xy / clip.w * 0.5 + 0.5;
+    return flipY ? vec2(uv.x, 1.0 - uv.y) : uv;
+}
+
 bool insideScreen(vec2 uv) {
     return uv.x > 0.0 && uv.x < 1.0 && uv.y > 0.0 && uv.y < 1.0;
 }
 
 // Returns the reflected scene colour (rgb) and how much it can be trusted (a).
+//
+// The ray is followed by its distance s from the origin: the point origin + direction * s projects
+// to clipOrigin + clipDirection * s (a projection is linear), so every step needs four
+// multiply-adds instead of a full matrix product.
 vec4 traceReflection(vec3 origin, vec3 direction, bool flipY) {
     const float MAX_DISTANCE = 48.0;
+    vec4 clipOrigin = ProjMat * vec4(origin, 1.0);
+    vec4 clipDirection = ProjMat * vec4(direction, 0.0);
     float stepLength = 0.2;
     float travelled = 0.0;
-    vec3 previous = origin;
+    float previous = 0.0;
     for (int i = 0; i < 40; i++) {
-        vec3 current = previous + direction * stepLength;
         travelled += stepLength;
-        if (current.z > -0.05 || travelled > MAX_DISTANCE) {
+        float z = origin.z + direction.z * travelled;
+        if (z > -0.05 || travelled > MAX_DISTANCE) {
             break; // behind the camera or too far
         }
-        vec2 uv = projectToUv(current, flipY);
+        vec2 uv = clipToUv(clipOrigin + clipDirection * travelled, flipY);
         if (!insideScreen(uv)) {
             break;
         }
-        float behind = -current.z - viewDepth(texture(SceneDepth, uv).r);
+        float behind = -z - viewDepth(texture(SceneDepth, uv).r);
         if (behind > 0.0) {
             if (behind > stepLength * 3.0 + 0.5) {
                 break; // passed behind a foreground object: no reliable hit
             }
             // Refine between the last point in front and the first point behind the surface.
-            vec3 front = previous;
-            vec3 back = current;
+            float front = previous;
+            float back = travelled;
             for (int j = 0; j < 5; j++) {
-                vec3 middle = (front + back) * 0.5;
-                vec2 middleUv = projectToUv(middle, flipY);
-                if (-middle.z - viewDepth(texture(SceneDepth, middleUv).r) > 0.0) {
+                float middle = (front + back) * 0.5;
+                vec2 middleUv = clipToUv(clipOrigin + clipDirection * middle, flipY);
+                if (-(origin.z + direction.z * middle) - viewDepth(texture(SceneDepth, middleUv).r) > 0.0) {
                     back = middle;
                 } else {
                     front = middle;
                 }
             }
-            vec2 hitUv = projectToUv(back, flipY);
+            vec2 hitUv = clipToUv(clipOrigin + clipDirection * back, flipY);
             vec2 edge = smoothstep(vec2(0.0), vec2(0.1), hitUv) * smoothstep(vec2(0.0), vec2(0.1), 1.0 - hitUv);
             float confidence = edge.x * edge.y * (1.0 - travelled / MAX_DISTANCE);
             return vec4(texture(SceneColor, hitUv).rgb, confidence);
         }
-        previous = current;
+        previous = travelled;
         stepLength *= 1.15;
     }
     return vec4(0.0);

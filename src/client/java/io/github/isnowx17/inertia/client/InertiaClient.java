@@ -16,6 +16,7 @@ import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
 import net.fabricmc.fabric.api.client.networking.v1.ClientPlayConnectionEvents;
 import net.fabricmc.fabric.api.client.rendering.v1.level.LevelRenderEvents;
 import net.fabricmc.loader.api.FabricLoader;
+import net.minecraft.client.Minecraft;
 
 public final class InertiaClient implements ClientModInitializer {
 	private static FluidManager fluids;
@@ -44,6 +45,8 @@ public final class InertiaClient implements ClientModInitializer {
 		ClientTickEvents.END_CLIENT_TICK.register(fluids::tick);
 		ClientPlayConnectionEvents.JOIN.register((handler, sender, client) -> fluids.onJoin(client));
 		ClientPlayConnectionEvents.DISCONNECT.register((handler, client) -> fluids.onDisconnect());
+		// A game tick that came while the GPU was busy is simulated on the first frame after.
+		LevelRenderEvents.START_MAIN.register(context -> fluids.onFrame(Minecraft.getInstance()));
 		LevelRenderEvents.END_MAIN.register(context -> {
 			if (config.renderSurface()) {
 				surfaceRenderer.drawShaderSurface(context);
