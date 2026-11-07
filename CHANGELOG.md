@@ -3,7 +3,7 @@
 All notable changes to Inertia are documented here. Versioning rules are described in
 [PLAN.md](PLAN.md#5-sürümleme).
 
-## [Unreleased]
+## [2.0.1]
 
 ### Changed
 - The game shows Inertia's items, messages and command output in English whatever language it is
