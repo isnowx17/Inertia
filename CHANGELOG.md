@@ -3,6 +3,12 @@
 All notable changes to Inertia are documented here. Versioning rules are described in
 [PLAN.md](PLAN.md#5-sürümleme).
 
+## [Unreleased]
+
+### Changed
+- The game shows Inertia's items, messages and command output in English whatever language it is
+  set to (the Turkish translation was removed).
+
 ## [2.0.0]
 
 The big optimisation update: the water surface is built on the graphics card, every frame.
