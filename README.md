@@ -2,16 +2,16 @@
 
 **Inertia is an advanced, professional physics engine for Minecraft: Java Edition.**
 
-![Sunset over a pond filled by Inertia's water, the sun glinting on the ripples](docs/screenshots/sunset.jpg)
+![Sunset over a pond filled by Inertia's water, the sun glinting on the ripples](docs/screenshots/sunset.gif)
 
 <table>
   <tr>
-    <td><img src="docs/screenshots/waterfall.jpg" alt="Two streams falling from a cliff into a pond"></td>
-    <td><img src="docs/screenshots/splash.jpg" alt="Water splashing and foaming where the falls hit the pond"></td>
+    <td width="50%"><img src="docs/screenshots/waterfall.gif" alt="Two streams falling from a cliff into a pond"></td>
+    <td width="50%"><img src="docs/screenshots/splash.gif" alt="Water splashing and foaming where the falls hit the pond"></td>
   </tr>
   <tr>
-    <td><img src="docs/screenshots/pond.jpg" alt="The pond from above: foam, ripples and a floating boat"></td>
-    <td><img src="docs/screenshots/underwater.jpg" alt="Looking up at the moving surface from under the water"></td>
+    <td width="50%"><img src="docs/screenshots/pond.jpg" alt="The pond from above: foam, ripples and a floating boat"></td>
+    <td width="50%"><img src="docs/screenshots/underwater.gif" alt="Looking up at the moving surface from under the water"></td>
   </tr>
 </table>
 

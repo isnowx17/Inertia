@@ -448,6 +448,8 @@ public final class InertiaBenchmark implements ClientModInitializer {
 	/** Pond centre and half widths. */
 	private static final int POND_RX = 9;
 	private int sourcesRemoved;
+	/** Ticks each view is held for a recorded clip. */
+	private static final int CLIP = 140;
 	private static final int POND_RZ = 7;
 
 	private void buildShowcase(Minecraft client) {
@@ -558,6 +560,29 @@ public final class InertiaBenchmark implements ClientModInitializer {
 		}
 		if (event(0, t, 300)) {
 			command(client, "summon minecraft:oak_boat 4.5 -58 3.5 {Rotation:[60f,0f]}");
+		}
+		if (Boolean.getBoolean("inertia.showcase.gif")) {
+			// Clips: each view held for CLIP ticks while the screen is recorded from outside.
+			double[][] views = {
+				{13.5, -53, 14.5, 0, -58.5, -3, 5000},
+				{5.5, -57.5, 3.5, -1, -58, -7, 5000},
+				{8, -59, 1.5, -8, -60.4, -0.5, 12300},
+				{-4.5, -61.6, 3.5, 0.5, -60.4, -6, 5000}};
+			for (int v = 0; v <= views.length; v++) {
+				if (event(1 + v, t, at + v * CLIP)) {
+					if (v == views.length) {
+						stage = Stage.DONE;
+						client.stop();
+						return;
+					}
+					double[] w = views[v];
+					command(client, "time set " + (int) w[6]);
+					command(client, "gamemode " + (v == 3 ? "spectator" : "creative") + " @a");
+					look(client, w[0], w[1], w[2], w[3], w[4], w[5]);
+					LOGGER.info("SHOWCASE clip {} at {}", v, System.currentTimeMillis());
+				}
+			}
+			return;
 		}
 		if (event(1, t, at)) {
 			look(client, 13.5, -53, 14.5, 0, -58.5, -3);
