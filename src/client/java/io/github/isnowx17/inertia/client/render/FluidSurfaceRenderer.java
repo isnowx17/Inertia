@@ -64,8 +64,13 @@ public final class FluidSurfaceRenderer {
 	private static final Identifier FOAM_TEXTURE = Inertia.id("textures/fluid/foam.png");
 	private static final int SKY_REFLECTION = 0xD6E8FF;
 	private static final int FOAM_COLOR = 0xF4FAFF;
-	/** Spray droplets are drawn smaller than full particles. */
-	private static final float DROPLET_SCALE = 0.35f;
+	/** Drops are drawn as big as the water a particle stands for (as in the particle render mode). */
+	private static final float DROPLET_SCALE = 1f;
+	/** Drops are tinted this much towards white, and this opaque (out of 255): water, not foam. */
+	private static final float DROPLET_WHITENESS = 0.25f;
+	private static final int DROPLET_ALPHA = 170;
+	/** Isolated particles slower than this (blocks/second) are not drawn as drops. */
+	private static final float MIN_DROPLET_SPEED = 1.0f;
 	/** Never move geometry further ahead than this, in simulated seconds (e.g. after a hitch). */
 	private static final float MAX_EXTRAPOLATION = 0.25f;
 	/** Spray particles drawn at most per frame; beyond this every n-th particle is drawn. */
@@ -77,8 +82,12 @@ public final class FluidSurfaceRenderer {
 	private static final float SHALLOW_OPACITY = 0.12f;
 	/** Foam (simple rendering) shows on surfaces whose normal points up at least this much. */
 	private static final float FOAM_MIN_UP = 0.3f;
-	/** Isolated particles slower than this (blocks/second) are not drawn as droplets. */
-	private static final float MIN_DROPLET_SPEED = 1.0f;
+	/** Floats per collected droplet: position, flow velocity, size (relative to {@link #DROPLET_SCALE}). */
+	private static final int DROPLET_STRIDE = 7;
+	/** Times the surface's flow is evened out with the neighbours' (see {@link #smoothFlow}). */
+	private static final int FLOW_SMOOTHING_PASSES = 3;
+	/** Most a vertex's flow may differ from its neighbours' (blocks/second), see {@link #smoothFlow}. */
+	private static final float MAX_FLOW_DEVIATION = 1.5f;
 	/** Floats per collected spray particle: position, flow velocity, lifetime. */
 	private static final int SPRAY_STRIDE = 7;
 	/** Spray is drawn where the field density is at least this fraction of the threshold (close to water). */
@@ -308,12 +317,12 @@ public final class FluidSurfaceRenderer {
 		Vector3f right = q.transform(new Vector3f(radius, 0, 0));
 		Vector3f up = q.transform(new Vector3f(0, radius, 0));
 		Vector3f normal = q.transform(new Vector3f(0, 0, 1));
-		int color = lerpRgb(waterColor, FOAM_COLOR, 0.8f);
+		int color = lerpRgb(waterColor, FOAM_COLOR, DROPLET_WHITENESS);
 		return new Matrix4f()
 			.m00(right.x).m01(right.y).m02(right.z).m03(dt)
 			.m10(up.x).m11(up.y).m12(up.z).m13(0f)
 			.m20(normal.x).m21(normal.y).m22(normal.z).m23(0f)
-			.m30(((color >> 16) & 0xFF) / 255f).m31(((color >> 8) & 0xFF) / 255f).m32((color & 0xFF) / 255f).m33(150 / 255f);
+			.m30(((color >> 16) & 0xFF) / 255f).m31(((color >> 8) & 0xFF) / 255f).m32((color & 0xFF) / 255f).m33(DROPLET_ALPHA / 255f);
 	}
 
 	/** Spray parameters for water_particle.vsh: fleck size, colour, time since the data. */
@@ -374,6 +383,7 @@ public final class FluidSurfaceRenderer {
 		target.lightsReady = false;
 		target.particleLightsReady = false;
 		FluidSurfaceMesher job = mesher;
+		boolean dropletsOn = config.droplets;
 		float camX = (float) (cameraPosition.x - snapshot.originX());
 		float camY = (float) (cameraPosition.y - snapshot.originY());
 		float camZ = (float) (cameraPosition.z - snapshot.originZ());
@@ -383,7 +393,8 @@ public final class FluidSurfaceRenderer {
 				try {
 					job.mesh(snapshot.positions(), snapshot.velocities(), snapshot.count(), FluidSimulation.STRIDE,
 						snapshot.frozenBoxes(), snapshot.frozenBoxCount(), target.mesh);
-					collectDroplets(job, snapshot, target);
+					smoothFlow(target.mesh);
+					collectDroplets(job, snapshot, target, dropletsOn);
 					collectSpray(job, snapshot.diffuse(), diffuseCount, target);
 					if (foamJob != null) {
 						if (resetFoam) {
@@ -470,29 +481,104 @@ public final class FluidSurfaceRenderer {
 		mesherThreshold = threshold;
 	}
 
-	/** Particles in regions too sparse to form a surface become spray droplets. */
-	private static void collectDroplets(FluidSurfaceMesher mesher, FluidSimulation.Snapshot snapshot, Result target) {
+	/**
+	 * Particles in regions too sparse to form a surface (water that left the surface as it got thin,
+	 * a splash breaking up) are drawn as drops of water of their own size, so the water does not turn
+	 * into smaller specks where it leaves the surface. Those lying still are not drawn.
+	 */
+	private static void collectDroplets(FluidSurfaceMesher mesher, FluidSimulation.Snapshot snapshot, Result target, boolean enabled) {
+		if (!enabled) {
+			target.dropletCount = 0;
+			return;
+		}
 		float[] positions = snapshot.positions();
 		float[] velocities = snapshot.velocities();
 		int stride = FluidSimulation.STRIDE;
 		int[] sparse = mesher.sparseParticles(positions, snapshot.count(), stride);
-		if (target.droplets.length < sparse.length * 6) {
-			target.droplets = new float[sparse.length * 6];
+		if (target.droplets.length < sparse.length * DROPLET_STRIDE) {
+			target.droplets = new float[sparse.length * DROPLET_STRIDE];
 		}
 		int n = 0;
 		for (int i : sparse) {
 			float vx = velocities[i * stride];
 			float vy = velocities[i * stride + 1];
 			float vz = velocities[i * stride + 2];
-			// A lone particle lying still on the ground is a leftover of a drained puddle, not spray.
+			// A lone particle lying still on the ground is a leftover of a drained puddle, not a drop.
 			if (vx * vx + vy * vy + vz * vz < MIN_DROPLET_SPEED * MIN_DROPLET_SPEED) {
 				continue;
 			}
-			System.arraycopy(positions, i * stride, target.droplets, n * 6, 3);
-			System.arraycopy(velocities, i * stride, target.droplets, n * 6 + 3, 3);
+			int o = n * DROPLET_STRIDE;
+			System.arraycopy(positions, i * stride, target.droplets, o, 3);
+			System.arraycopy(velocities, i * stride, target.droplets, o + 3, 3);
+			target.droplets[o + 6] = 1f;
 			n++;
 		}
 		target.dropletCount = n;
+	}
+
+	/**
+	 * Evens out the flow velocity of the surface's vertices with their neighbours'. The shaders move
+	 * every vertex along its flow between two surfaces; where a splash leaves the water (in front of a
+	 * minecart, say) the tips of the sheet are much faster than the water they come from, and the
+	 * surface then stretches into spikes that are gone at the next surface. After averaging with the
+	 * neighbours, a vertex may differ from their mean by at most {@link #MAX_FLOW_DEVIATION}. Where the
+	 * whole surface flows (a waterfall) nothing changes.
+	 */
+	static void smoothFlow(FluidSurfaceMesher.Mesh mesh) {
+		int count = mesh.vertexCount;
+		if (count == 0) {
+			return;
+		}
+		int vs = FluidSurfaceMesher.VERTEX_STRIDE;
+		float[] v = mesh.vertices;
+		float[] sum = new float[count * 3];
+		int[] neighbours = new int[count];
+		int[] quads = mesh.quads;
+		for (int pass = 0; pass < FLOW_SMOOTHING_PASSES; pass++) {
+			java.util.Arrays.fill(sum, 0f);
+			java.util.Arrays.fill(neighbours, 0);
+			for (int q = 0; q < mesh.quadCount; q++) {
+				for (int e = 0; e < 4; e++) {
+					int a = quads[q * 4 + e];
+					int b = quads[q * 4 + ((e + 1) & 3)];
+					for (int c = 0; c < 3; c++) {
+						sum[a * 3 + c] += v[b * vs + 6 + c];
+						sum[b * 3 + c] += v[a * vs + 6 + c];
+					}
+					neighbours[a]++;
+					neighbours[b]++;
+				}
+			}
+			boolean last = pass == FLOW_SMOOTHING_PASSES - 1;
+			for (int i = 0; i < count; i++) {
+				if (neighbours[i] == 0) {
+					continue;
+				}
+				float inv = 1f / neighbours[i];
+				int o = i * vs + 6;
+				float mx = sum[i * 3] * inv;
+				float my = sum[i * 3 + 1] * inv;
+				float mz = sum[i * 3 + 2] * inv;
+				float x = 0.5f * v[o] + 0.5f * mx;
+				float y = 0.5f * v[o + 1] + 0.5f * my;
+				float z = 0.5f * v[o + 2] + 0.5f * mz;
+				if (last) {
+					float dx = x - mx;
+					float dy = y - my;
+					float dz = z - mz;
+					float d = (float) Math.sqrt(dx * dx + dy * dy + dz * dz);
+					if (d > MAX_FLOW_DEVIATION) {
+						float k = MAX_FLOW_DEVIATION / d;
+						x = mx + dx * k;
+						y = my + dy * k;
+						z = mz + dz * k;
+					}
+				}
+				v[o] = x;
+				v[o + 1] = y;
+				v[o + 2] = z;
+			}
+		}
 	}
 
 	/** Keeps the diffuse particles just outside the water (spray), with the local flow velocity. */
@@ -697,8 +783,8 @@ public final class FluidSurfaceRenderer {
 		float[] d = target.droplets;
 		for (int i = 0; i < target.dropletCount; i++) {
 			int o = i * stride;
-			int s = i * 6;
-			putParticle(b, o, d[s], d[s + 1], d[s + 2], d[s + 3], d[s + 4], d[s + 5], 0f);
+			int s = i * DROPLET_STRIDE;
+			putParticle(b, o, d[s], d[s + 1], d[s + 2], d[s + 3], d[s + 4], d[s + 5], d[s + 6]);
 			include(target, d[s], d[s + 1], d[s + 2], d[s + 3], d[s + 4], d[s + 5]);
 		}
 		float[] f = target.spray;
@@ -781,7 +867,7 @@ public final class FluidSurfaceRenderer {
 		int stride = WaterPass.PARTICLE_STRIDE;
 		float[] d = result.droplets;
 		for (int i = 0; i < result.dropletCount; i++) {
-			int s = i * 6;
+			int s = i * DROPLET_STRIDE;
 			b.putInt(i * stride + WaterPass.PARTICLE_LIGHT, particleLight(level, block, result,
 				d[s] + d[s + 3] * dt, d[s + 1] + d[s + 4] * dt, d[s + 2] + d[s + 5] * dt));
 		}
@@ -1013,8 +1099,7 @@ public final class FluidSurfaceRenderer {
 		Vector3f right = q.transform(new Vector3f(radius, 0, 0));
 		Vector3f up = q.transform(new Vector3f(0, radius, 0));
 		Vector3f normal = q.transform(new Vector3f(0, 0, 1));
-		int alpha = 150;
-		int color = (alpha << 24) | lerpRgb(waterColor, FOAM_COLOR, 0.8f);
+		int color = (DROPLET_ALPHA << 24) | lerpRgb(waterColor, FOAM_COLOR, DROPLET_WHITENESS);
 
 		float[] corners = new float[count * 12];
 		int[] colors = new int[count];
@@ -1022,25 +1107,33 @@ public final class FluidSurfaceRenderer {
 		float[] normals = new float[count * 3];
 		BlockPos.MutableBlockPos block = new BlockPos.MutableBlockPos();
 		for (int i = 0; i < count; i++) {
-			float lx = d[i * 6] + d[i * 6 + 3] * dt;
-			float ly = d[i * 6 + 1] + d[i * 6 + 4] * dt;
-			float lz = d[i * 6 + 2] + d[i * 6 + 5] * dt;
+			int s = i * DROPLET_STRIDE;
+			float lx = d[s] + d[s + 3] * dt;
+			float ly = d[s + 1] + d[s + 4] * dt;
+			float lz = d[s + 2] + d[s + 5] * dt;
 			float x = lx + offX;
 			float y = ly + offY;
 			float z = lz + offZ;
+			float k = d[s + 6];
+			float rx = right.x * k;
+			float ry = right.y * k;
+			float rz = right.z * k;
+			float ux = up.x * k;
+			float uy = up.y * k;
+			float uz = up.z * k;
 			int c = i * 12;
-			corners[c] = x - right.x - up.x;
-			corners[c + 1] = y - right.y - up.y;
-			corners[c + 2] = z - right.z - up.z;
-			corners[c + 3] = x + right.x - up.x;
-			corners[c + 4] = y + right.y - up.y;
-			corners[c + 5] = z + right.z - up.z;
-			corners[c + 6] = x + right.x + up.x;
-			corners[c + 7] = y + right.y + up.y;
-			corners[c + 8] = z + right.z + up.z;
-			corners[c + 9] = x - right.x + up.x;
-			corners[c + 10] = y - right.y + up.y;
-			corners[c + 11] = z - right.z + up.z;
+			corners[c] = x - rx - ux;
+			corners[c + 1] = y - ry - uy;
+			corners[c + 2] = z - rz - uz;
+			corners[c + 3] = x + rx - ux;
+			corners[c + 4] = y + ry - uy;
+			corners[c + 5] = z + rz - uz;
+			corners[c + 6] = x + rx + ux;
+			corners[c + 7] = y + ry + uy;
+			corners[c + 8] = z + rz + uz;
+			corners[c + 9] = x - rx + ux;
+			corners[c + 10] = y - ry + uy;
+			corners[c + 11] = z - rz + uz;
 			colors[i] = color;
 			normals[i * 3] = normal.x;
 			normals[i * 3 + 1] = normal.y;

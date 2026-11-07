@@ -11,6 +11,7 @@
 //
 // Per-draw parameters in DynamicTransforms (ColorModulator stays white for entity.fsh):
 //   ModelOffset = the water's origin relative to the camera
+// The instance's Life is the size of a droplet (0 to 1) and the remaining lifetime of spray.
 //   TextureMat  = column 0: billboard right vector (droplets), seconds since the data was taken (w)
 //                 column 1: billboard up vector (droplets), 0 for droplets / 1 for spray (w)
 //                 column 2: quad normal (droplets), half size of a spray fleck (w)
@@ -65,8 +66,8 @@ void main() {
     vec3 normal;
     vec4 color;
     if (TextureMat[1].w < 0.5) {
-        // Droplet: a camera-facing square of the given radius.
-        position = position + TextureMat[0].xyz * sx + TextureMat[1].xyz * sy;
+        // Droplet: a camera-facing square of the given radius, times its size.
+        position = position + (TextureMat[0].xyz * sx + TextureMat[1].xyz * sy) * Life;
         normal = TextureMat[2].xyz;
         color = TextureMat[3];
     } else {

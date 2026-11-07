@@ -134,6 +134,12 @@ public final class InertiaConfig {
 	// Foam: forms where the water churns (fast flow, splashes; PhysX spawns spray and bubbles there
 	// too), drifts with the surface flow and gathers into lines and rings before it fades.
 
+	/**
+	 * Whether water that leaves the surface in single drops (a splash breaking up) is drawn as small
+	 * droplets; off, only the surface and the spray are drawn.
+	 */
+	public boolean droplets = true;
+
 	/** Whether foam and spray are simulated and drawn. */
 	public boolean foam = true;
 
