@@ -131,7 +131,10 @@ final class EntityFluidInteraction {
 			int inside = b >= 0 ? sim.bodyWaterCount(b) : 0;
 			double submersion = b >= 0 ? Math.min(1.0, inside * particleVolume / step.shellVolumes()[b]) : 0;
 			double surface = sim.surfaceAround(box);
-			boolean touching = sim.touchesWater(box.inflate(0.25));
+			// Falling fast, it may reach the water and the ground below it within one tick: look as far
+			// below it as it falls in two.
+			double fall = Math.max(0, entity.yo - entity.getY());
+			boolean touching = sim.touchesWater(box.inflate(0.25).expandTowards(0, -2 * fall, 0));
 			if (!touching && submersion < MIN_SUBMERSION && !(surface > box.minY)) {
 				continue;
 			}

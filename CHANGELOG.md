@@ -3,6 +3,23 @@
 All notable changes to Inertia are documented here. Versioning rules are described in
 [PLAN.md](PLAN.md#5-sürümleme).
 
+## [1.4.1]
+
+### Fixed
+- Splashes no longer flash up as spikes that vanish a moment later. Between two surfaces every
+  vertex is moved along its flow; where a splash left the water one vertex could be much faster than
+  those around it and the surface stretched into a spike until the next surface. The flow of the
+  surface is now evened out with the neighbours' first, and no vertex may move more than 1.5 blocks a
+  second faster or slower than the ones around it (a waterfall flows as before).
+- An animal falling from high up into shallow water no longer dies: the water below it now counts as
+  soon as it would reach it within the next tick.
+- Water that leaves the surface as it gets thin (a splash breaking up) no longer turns into small
+  white specks: it is drawn as drops of water as big as the water each particle stands for, in the
+  water's colour.
+
+### Added
+- `droplets` (on by default): off, water that leaves the surface in single drops is not drawn.
+
 ## [1.4.0]
 
 ### Added
