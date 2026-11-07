@@ -67,6 +67,7 @@ bucket are unchanged. The water is not saved: it disappears when you leave the w
 | `playerInteraction` | true | Whether water pushes, slows and lifts the player. |
 | `waterShader` | true | Draw the water with Inertia's shader (refraction, depth colour, ripples, sun glints). Falls back automatically if unsupported. |
 | `gpuSurface` | true | Build the water surface on the GPU every frame (with the water shader, NVIDIA OpenGL). Falls back to the CPU where it cannot work. |
+| `waterSounds` | true | Minecraft's own water sounds for Inertia's water: splashes where it hits something, flowing water where it runs fast, the player splashing in and swimming, and the buckets. |
 | `rippleStrength` | 1.0 | Strength of the surface ripples; 0 = perfectly smooth. |
 | `refractionStrength` | 1.0 | How strongly the water bends what is behind it. |
 | `waterAbsorption` | 1.0 | How quickly light is absorbed; higher makes deep water darker and bluer. |

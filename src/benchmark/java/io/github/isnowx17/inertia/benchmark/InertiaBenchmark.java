@@ -535,7 +535,12 @@ public final class InertiaBenchmark implements ClientModInitializer {
 		}
 		if (worldTicks % 100 == 0 && InertiaClient.fluids().simulation() != null) {
 			FluidSimulation s = InertiaClient.fluids().simulation();
-			LOGGER.info("WATER t={} active={} frozen={} fps={}", worldTicks, s.activeCount(), s.frozenParticles(), client.getFps());
+			var heard = s.acoustics();
+			LOGGER.info("WATER t={} active={} frozen={} fps={} splashes={} top={} flows={} top={}", worldTicks, s.activeCount(),
+				s.frozenParticles(), client.getFps(), heard != null ? heard.splashCount : -1,
+				heard != null && heard.splashCount > 0 ? heard.splashes[3] : 0, heard != null ? heard.flowCount : -1,
+				heard != null && heard.flowCount > 0 ? heard.flows[3] : 0);
+
 		}
 		FluidManager fluids = InertiaClient.fluids();
 		BlockPos[] sources = scene.sources();

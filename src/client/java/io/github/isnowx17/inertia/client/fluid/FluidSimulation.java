@@ -204,6 +204,12 @@ public final class FluidSimulation implements AutoCloseable {
 	private ParticleScan.Part[] scanParts = new ParticleScan.Part[0];
 	private ParticleScan.Part nextScan = new ParticleScan.Part();
 	private ParticleScan.Part scan = new ParticleScan.Part();
+	// Where the water makes noise (WaterSounds), measured on the physics thread after each step.
+	private final io.github.isnowx17.inertia.util.WaterAcoustics acoustics = new io.github.isnowx17.inertia.util.WaterAcoustics();
+	private volatile io.github.isnowx17.inertia.util.WaterAcoustics.Result latestAcoustics;
+	private volatile boolean acousticsWanted;
+	/** The tick the running step simulates. */
+	private long stepTickNumber;
 	/** Runs the read-back and scan chunks of a step in parallel. */
 	private final ForkJoinPool scanPool = new ForkJoinPool(
 		Math.max(1, Math.min(4, Runtime.getRuntime().availableProcessors() / 2)),
@@ -1124,6 +1130,7 @@ public final class FluidSimulation implements AutoCloseable {
 		s.setBodies(stepBodies.shells(), stepBodies.entities().size());
 		stepSources = cells;
 		stepParticleCount = activeCount;
+		stepTickNumber = tick;
 		stepHidesFoam = tick < foamHiddenUntilTick;
 		stepSubsteps = solverLevels[solverLevel].substeps();
 		stepSubstepSeconds = TICK_SECONDS / stepSubsteps;
@@ -1321,6 +1328,15 @@ public final class FluidSimulation implements AutoCloseable {
 		}
 		readBackAndScan(count);
 		readBackFoam();
+		if (acousticsWanted) {
+			var result = acoustics.measure(nextPos, nextVel, count, STRIDE, params.particleVolume(),
+				new io.github.isnowx17.inertia.util.WaterAcoustics.Result());
+			result.originX = scanSettings.originX;
+			result.originY = scanSettings.originY;
+			result.originZ = scanSettings.originZ;
+			result.tick = stepTickNumber;
+			latestAcoustics = result;
+		}
 
 		stepFinishedNanos = System.nanoTime();
 		lastSimulateMillis = (simulated - started) / 1_000_000f;
@@ -2041,6 +2057,19 @@ public final class FluidSimulation implements AutoCloseable {
 	}
 
 	/** Number of game ticks simulated so far. */
+	/** Where the water made noise in the newest step, or {@code null}. */
+	public io.github.isnowx17.inertia.util.WaterAcoustics.Result acoustics() {
+		return latestAcoustics;
+	}
+
+	/** Whether the physics thread measures {@link #acoustics()}. */
+	public void setAcousticsWanted(boolean wanted) {
+		acousticsWanted = wanted;
+		if (!wanted) {
+			latestAcoustics = null;
+		}
+	}
+
 	public long tickCount() {
 		return tick;
 	}

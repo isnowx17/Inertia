@@ -98,6 +98,9 @@ public final class InertiaConfig {
 	 */
 	public boolean gpuSurface = true;
 
+	/** Minecraft's own water sounds for the water: splashes, flowing water, swimming, buckets. */
+	public boolean waterSounds = true;
+
 	/** Surface smoothing radius relative to the surface cell size. Larger is smoother and rounder. */
 	public float surfaceSmoothness = 2.0f;
 

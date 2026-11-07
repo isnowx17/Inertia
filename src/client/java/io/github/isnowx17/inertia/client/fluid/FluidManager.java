@@ -32,6 +32,7 @@ public final class FluidManager {
 	private boolean failed;
 	private boolean warnedThisSession;
 	private double playerSubmersion;
+	private final WaterSounds sounds = new WaterSounds();
 	private final java.util.List<Source> sources = new java.util.ArrayList<>();
 	private long lastSourceToggle = Long.MIN_VALUE / 2;
 	private static final int MAX_SOURCES = 16;
@@ -129,6 +130,10 @@ public final class FluidManager {
 			playerSubmersion = config.playerInteraction ? PlayerFluidInteraction.apply(simulation, client.player) : 0;
 			if (config.entityInteraction) {
 				EntityFluidInteraction.apply(simulation, client);
+			}
+			simulation.setAcousticsWanted(config.waterSounds);
+			if (config.waterSounds) {
+				sounds.tick(client, simulation, playerSubmersion);
 			}
 		} catch (Throwable t) {
 			handleFailure(client.player, t);
@@ -296,6 +301,7 @@ public final class FluidManager {
 				pendingSpawns.add(velocity.x);
 				pendingSpawns.add(velocity.y);
 				pendingSpawns.add(velocity.z);
+				pouredSound(player, center, true);
 				return true;
 			}
 			int added = simulation.spawnBlock(center, velocity);
@@ -303,6 +309,7 @@ public final class FluidManager {
 				player.sendOverlayMessage(Component.translatable("message.inertia.limit_reached", simulation.limit()).withStyle(ChatFormatting.YELLOW));
 				return false;
 			}
+			pouredSound(player, center, true);
 			return true;
 		} catch (Throwable t) {
 			handleFailure(player, t);
@@ -322,6 +329,9 @@ public final class FluidManager {
 		lastSourceToggle = now;
 
 		if (stopAll) {
+			if (!sources.isEmpty()) {
+				pouredSound(player, player.position(), false);
+			}
 			sources.clear();
 			player.sendOverlayMessage(Component.translatable("message.inertia.sources_cleared"));
 			return true;
@@ -332,6 +342,7 @@ public final class FluidManager {
 		for (int i = 0; i < sources.size(); i++) {
 			if (sources.get(i).cell().equals(cell)) {
 				sources.remove(i);
+				pouredSound(player, Vec3.atCenterOf(cell), false);
 				player.sendOverlayMessage(Component.translatable("message.inertia.source_removed", sources.size()));
 				return true;
 			}
@@ -348,8 +359,16 @@ public final class FluidManager {
 			return false;
 		}
 		sources.add(new Source(cell.immutable()));
+		pouredSound(player, Vec3.atCenterOf(cell), true);
 		player.sendOverlayMessage(Component.translatable("message.inertia.source_added", sources.size()));
 		return true;
+	}
+
+	/** A bucket's sound where water was poured ({@code empty}) or a source was turned off. */
+	private void pouredSound(Player player, Vec3 at, boolean empty) {
+		if (config.waterSounds) {
+			WaterSounds.bucket(player.level(), at, empty);
+		}
 	}
 
 	/** Whether water can be in a block: nothing there to collide with. */
@@ -458,6 +477,7 @@ public final class FluidManager {
 
 	private void closeSimulation() {
 		playerSubmersion = 0;
+		sounds.reset();
 		EntityFluidInteraction.clear();
 		sources.clear();
 		pendingSpawns.clear();

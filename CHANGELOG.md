@@ -3,6 +3,19 @@
 All notable changes to Inertia are documented here. Versioning rules are described in
 [PLAN.md](PLAN.md#5-sürümleme).
 
+## [2.1.0]
+
+### Added
+- **Water sounds** (`waterSounds`, on by default), all Minecraft's own. Falling water splashes where
+  it lands, on the water below it or on the ground right under it (never while it is still in the
+  air): a few drops drip, more water splashes louder and deeper. Water stirred a little sloshes
+  softly, a fast current gurgles like flowing water. The player splashes when getting into the
+  water (the diving sound only after a real fall) and makes water sounds wading and swimming. The
+  buckets sound when water is poured, a source is turned on and when it is turned off. The water is
+  measured for this on the physics thread after each step: water falling faster than 1.8 blocks a
+  second per 2 x 2 block column, and water moving faster than 0.8 blocks a second per 2-block
+  cell; each place sounds again only after a short pause.
+
 ## [2.0.1]
 
 ### Changed
