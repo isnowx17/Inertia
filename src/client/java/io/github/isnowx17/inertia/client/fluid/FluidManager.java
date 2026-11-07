@@ -127,6 +127,9 @@ public final class FluidManager {
 			}
 			// The player feels the water every tick, from the newest measurement.
 			playerSubmersion = config.playerInteraction ? PlayerFluidInteraction.apply(simulation, client.player) : 0;
+			if (config.entityInteraction) {
+				EntityFluidInteraction.apply(simulation, client);
+			}
 		} catch (Throwable t) {
 			handleFailure(client.player, t);
 		}
@@ -415,6 +418,13 @@ public final class FluidManager {
 		}
 	}
 
+	/** Server thread: applies what the water does to the server's entities (see {@link EntityFluidInteraction}). */
+	public void serverTick(net.minecraft.server.MinecraftServer server) {
+		if (config.entityInteraction) {
+			EntityFluidInteraction.serverTick(server);
+		}
+	}
+
 	/** Removes all water. */
 	public int clear() {
 		sources.clear();
@@ -448,6 +458,7 @@ public final class FluidManager {
 
 	private void closeSimulation() {
 		playerSubmersion = 0;
+		EntityFluidInteraction.clear();
 		sources.clear();
 		pendingSpawns.clear();
 		tickPending = false;

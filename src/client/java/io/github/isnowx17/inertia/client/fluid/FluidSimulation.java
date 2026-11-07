@@ -277,6 +277,13 @@ public final class FluidSimulation implements AutoCloseable {
 
 	private final TerrainCollider terrain;
 	private final PlayerBody playerBody;
+	/** The other entities in the water (see {@link EntityBodies}): those near it now, of the running step and of the latest finished one. */
+	private final EntityBodies entityBodies;
+	private java.util.List<net.minecraft.world.entity.Entity> nearEntities = java.util.List.of();
+	private EntityBodies.Step stepBodies = EntityBodies.Step.EMPTY;
+	private EntityBodies.Step measuredBodies = EntityBodies.Step.EMPTY;
+	/** Blocks per tick an entity in still water has to move to wake it up. */
+	private static final double ENTITY_WAKE_SPEED = 0.06;
 	/** Calm water deep under the surface, kept as a volume instead of particles; null when switched off. */
 	private final FrozenColumns frozen;
 	private final FrozenCollider frozenCollider;
@@ -343,6 +350,7 @@ public final class FluidSimulation implements AutoCloseable {
 
 		terrain = new TerrainCollider(scene);
 		playerBody = new PlayerBody(scene);
+		entityBodies = new EntityBodies(scene);
 		if (config.stillWaterVolume) {
 			frozen = new FrozenColumns(params.spacing(), params.particlesPerAxis(), params.solidRestOffset());
 			frozenCollider = new FrozenCollider(scene, params.spacing(), params.solidRestOffset() - 0.5f * params.spacing());
@@ -1028,6 +1036,8 @@ public final class FluidSimulation implements AutoCloseable {
 			return;
 		}
 		tick++;
+		net.minecraft.world.phys.AABB water = waterBox();
+		nearEntities = config.entityInteraction && water != null ? EntityBodies.near(level, player, water) : java.util.List.of();
 		if (frozen != null) {
 			updateFrozen(level, player);
 		}
@@ -1035,6 +1045,9 @@ public final class FluidSimulation implements AutoCloseable {
 			foamCount = 0;
 			terrain.update(level, new LongOpenHashSet(), new LongOpenHashSet(), tick);
 			playerBody.remove();
+			entityBodies.clear();
+			stepBodies = EntityBodies.Step.EMPTY;
+			measuredBodies = EntityBodies.Step.EMPTY;
 			resetSolver();
 			wake();
 			return;
@@ -1042,6 +1055,7 @@ public final class FluidSimulation implements AutoCloseable {
 
 		updateTerrain(level);
 		playerBody.update(player, originX, originY, originZ, config.playerInteraction);
+		stepBodies = entityBodies.update(nearEntities, originX, originY, originZ, Math.max(PLAYER_SHELL, params.spacing() * 3));
 
 		ParticleScan.Settings s = scanSettings;
 		s.minY = level.getMinY() - BELOW_WORLD_MARGIN - originY;
@@ -1086,6 +1100,7 @@ public final class FluidSimulation implements AutoCloseable {
 		s.calmSpeedSq = FrozenColumns.CALM_SPEED * FrozenColumns.CALM_SPEED;
 		s.restlessSpeedSq = FrozenColumns.RESTLESS_SPEED * FrozenColumns.RESTLESS_SPEED;
 		setGrid(s);
+		s.setBodies(stepBodies.shells(), stepBodies.entities().size());
 		stepSources = cells;
 		stepParticleCount = activeCount;
 		stepHidesFoam = tick < foamHiddenUntilTick;
@@ -1103,14 +1118,16 @@ public final class FluidSimulation implements AutoCloseable {
 	 */
 	private boolean sleep(ClientLevel level, Player player) {
 		if (!sleeping) {
-			if (stillSteps < SLEEP_AFTER_STEPS || requestedSources.length > 0 || playerAtWater(player)) {
+			if (stillSteps < SLEEP_AFTER_STEPS || requestedSources.length > 0 || playerAtWater(player) || entitiesStir(level, player)) {
 				return false;
 			}
 			sleeping = true;
 			sleepTicks = 0;
-			// Spray would hang in the air; the player's body must not jump when the water wakes up.
+			// Spray would hang in the air; the bodies must not jump when the water wakes up. The entities
+			// keep feeling the water as last measured: it is still.
 			foamCount = 0;
 			playerBody.remove();
+			entityBodies.clear();
 			sleepPlayerX = player.getX();
 			sleepPlayerY = player.getY();
 			sleepPlayerZ = player.getZ();
@@ -1121,11 +1138,78 @@ public final class FluidSimulation implements AutoCloseable {
 		double dy = player.getY() - sleepPlayerY;
 		double dz = player.getZ() - sleepPlayerZ;
 		if (terrain.refreshDirty(level) || requestedSources.length > 0 || playerAtWater(player) || (frozen != null && frozen.hasChanges())
+			|| entitiesStir(level, player)
 			|| dx * dx + dy * dy + dz * dz > sleepPlayerRange * sleepPlayerRange) {
 			wake();
 			return false;
 		}
 		return true;
+	}
+
+	/** Whether an entity moves in or into the water (which then has to be simulated). */
+	private boolean entitiesStir(ClientLevel level, Player player) {
+		if (!config.entityInteraction) {
+			return false;
+		}
+		net.minecraft.world.phys.AABB water = waterBox();
+		if (water == null) {
+			return false;
+		}
+		for (net.minecraft.world.entity.Entity entity : EntityBodies.near(level, player, water)) {
+			double dx = entity.getX() - entity.xo;
+			double dy = entity.getY() - entity.yo;
+			double dz = entity.getZ() - entity.zo;
+			if (dx * dx + dy * dy + dz * dz > ENTITY_WAKE_SPEED * ENTITY_WAKE_SPEED && touchesWater(entity.getBoundingBox().inflate(0.5))) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	/** The entities near the water at the latest tick. */
+	java.util.List<net.minecraft.world.entity.Entity> nearEntities() {
+		return nearEntities;
+	}
+
+	/** Whether a box (world coordinates) touches a block that held water in the latest step, or frozen water. */
+	boolean touchesWater(net.minecraft.world.phys.AABB box) {
+		if (frozen != null && frozen.touches((float) (box.minX - originX), (float) (box.minY - originY), (float) (box.minZ - originZ),
+			(float) (box.maxX - originX), (float) (box.maxY - originY), (float) (box.maxZ - originZ))) {
+			return true;
+		}
+		for (int x = Mth.floor(box.minX); x <= Mth.floor(box.maxX); x++) {
+			for (int y = Mth.floor(box.minY); y <= Mth.floor(box.maxY); y++) {
+				for (int z = Mth.floor(box.minZ); z <= Mth.floor(box.maxZ); z++) {
+					if (scan.blocks.contains(BlockPos.asLong(x, y, z))) {
+						return true;
+					}
+				}
+			}
+		}
+		return false;
+	}
+
+	/** Box (world coordinates) around the water of the latest step and the frozen water; null without water. */
+	private net.minecraft.world.phys.AABB waterBox() {
+		float x0 = scan.minX;
+		float y0 = scan.minY;
+		float z0 = scan.minZ;
+		float x1 = scan.maxX;
+		float y1 = scan.maxY;
+		float z1 = scan.maxZ;
+		float[] f = frozen != null ? frozen.box() : null;
+		if (f != null) {
+			x0 = Math.min(x0, f[0]);
+			y0 = Math.min(y0, f[1]);
+			z0 = Math.min(z0, f[2]);
+			x1 = Math.max(x1, f[3]);
+			y1 = Math.max(y1, f[4]);
+			z1 = Math.max(z1, f[5]);
+		}
+		if (!(x0 <= x1) || !(y0 <= y1) || !(z0 <= z1)) {
+			return null;
+		}
+		return new net.minecraft.world.phys.AABB(x0 + originX, y0 + originY, z0 + originZ, x1 + originX, y1 + originY, z1 + originZ);
 	}
 
 	/** Whether the player is close to a block that held water in the latest step, and can touch it. */
@@ -1298,6 +1382,7 @@ public final class FluidSimulation implements AutoCloseable {
 		nextScan = scan;
 		scan = finished;
 		sourceCells.clear();
+		measuredBodies = stepBodies;
 		SourceCell[] cells = stepSources;
 		for (int k = 0; k < cells.length && k < finished.sourceSlots.length; k++) {
 			SourceCell cell = cells[k];
@@ -1479,6 +1564,17 @@ public final class FluidSimulation implements AutoCloseable {
 			ctx.sourceZ[k] = BlockPos.getZ(requestedSources[k]) - originZ;
 		}
 		ctx.tight = gpuLimit;
+		float[] bodies = new float[nearEntities.size() * 6];
+		for (int k = 0; k < nearEntities.size(); k++) {
+			net.minecraft.world.phys.AABB b = nearEntities.get(k).getBoundingBox();
+			bodies[k * 6] = (float) (b.minX - originX);
+			bodies[k * 6 + 1] = (float) (b.minY - originY);
+			bodies[k * 6 + 2] = (float) (b.minZ - originZ);
+			bodies[k * 6 + 3] = (float) (b.maxX - originX);
+			bodies[k * 6 + 4] = (float) (b.maxY - originY);
+			bodies[k * 6 + 5] = (float) (b.maxZ - originZ);
+		}
+		ctx.bodies = bodies;
 		ctx.overloaded = stepLoadMillis > GPU_OVERLOADED_MILLIS;
 
 		if (!frozen.isEmpty()) {
@@ -1586,34 +1682,32 @@ public final class FluidSimulation implements AutoCloseable {
 		addedMaxX = Float.NEGATIVE_INFINITY;
 		addedMinZ = Float.POSITIVE_INFINITY;
 		addedMaxZ = Float.NEGATIVE_INFINITY;
-		if (frozen == null) {
-			return;
-		}
-		int[] frozenBounds = frozen.bounds();
+		int[] frozenBounds = frozen != null ? frozen.bounds() : null;
 		if (frozenBounds != null) {
 			minX = Math.min(minX, frozenBounds[0]);
 			maxX = Math.max(maxX, frozenBounds[1]);
 			minZ = Math.min(minZ, frozenBounds[2]);
 			maxZ = Math.max(maxZ, frozenBounds[3]);
 		}
-		if (!(minX <= maxX) || !(minZ <= maxZ)) {
-			frozen.prepareScan(s);
-			return;
+		// The columns are measured for the frozen water and for the water's surface under entities.
+		boolean wanted = frozen != null || !nearEntities.isEmpty();
+		if (wanted && minX <= maxX && minZ <= maxZ) {
+			int x0 = Mth.floor(minX) - 2;
+			int z0 = Mth.floor(minZ) - 2;
+			int sizeX = Mth.floor(maxX) + 3 - x0;
+			int sizeZ = Mth.floor(maxZ) + 3 - z0;
+			if (sizeX <= MAX_GRID_SIZE && sizeZ <= MAX_GRID_SIZE) {
+				s.gridX0 = x0;
+				s.gridZ0 = z0;
+				s.gridSizeX = sizeX;
+				s.gridSizeZ = sizeZ;
+			}
 		}
-		int x0 = Mth.floor(minX) - 2;
-		int z0 = Mth.floor(minZ) - 2;
-		int sizeX = Mth.floor(maxX) + 3 - x0;
-		int sizeZ = Mth.floor(maxZ) + 3 - z0;
-		if (sizeX > MAX_GRID_SIZE || sizeZ > MAX_GRID_SIZE) {
+		if (frozen != null) {
 			frozen.prepareScan(s);
-			return;
 		}
-		s.gridX0 = x0;
-		s.gridZ0 = z0;
-		s.gridSizeX = sizeX;
-		s.gridSizeZ = sizeZ;
-		frozen.prepareScan(s);
 	}
+
 
 	/** Two ascending index lists as one, each index once. */
 	private static IntArrayList mergeSorted(IntArrayList a, IntArrayList b) {
@@ -1766,6 +1860,9 @@ public final class FluidSimulation implements AutoCloseable {
 		version++;
 		buffer.setNbActiveParticles(0);
 		terrain.clear();
+		entityBodies.clear();
+		stepBodies = EntityBodies.Step.EMPTY;
+		measuredBodies = EntityBodies.Step.EMPTY;
 		if (frozen != null) {
 			frozen.clear();
 			frozenCollider.clear();
@@ -1810,6 +1907,62 @@ public final class FluidSimulation implements AutoCloseable {
 
 	public int activeCount() {
 		return activeCount;
+	}
+
+	/** The entities the latest finished step measured the water around, in body order. */
+	EntityBodies.Step measuredBodies() {
+		return measuredBodies;
+	}
+
+	/** Particles in the shell around body {@code b} of {@link #measuredBodies()}. */
+	public int bodyWaterCount(int b) {
+		return b < ParticleScan.MAX_BODIES ? scan.bodyInside[b] : 0;
+	}
+
+	/** Average velocity (blocks/second) along {@code axis} (0 x, 1 y, 2 z) of the water around body {@code b}. */
+	public double bodyWaterVelocity(int b, int axis) {
+		int n = bodyWaterCount(b);
+		return n == 0 ? 0 : scan.bodySum[b * 3 + axis] / n;
+	}
+
+	/**
+	 * Height (world coordinates) of the water's surface around a box (world coordinates), from the
+	 * latest step: the median over the columns right around it, not under it (water splashed onto an
+	 * entity lies on it, and would rise with it). NaN where it is not known.
+	 */
+	public double surfaceAround(net.minecraft.world.phys.AABB box) {
+		int x0 = Mth.floor(box.minX) - 1;
+		int x1 = Mth.floor(box.maxX) + 1;
+		int z0 = Mth.floor(box.minZ) - 1;
+		int z1 = Mth.floor(box.maxZ) + 1;
+		it.unimi.dsi.fastutil.floats.FloatArrayList tops = new it.unimi.dsi.fastutil.floats.FloatArrayList();
+		for (int x = x0; x <= x1; x++) {
+			for (int z = z0; z <= z1; z++) {
+				if (x > x0 && x < x1 && z > z0 && z < z1) {
+					continue; // under the box
+				}
+				int c = scan.cell(x - originX, z - originZ);
+				float top = Float.NEGATIVE_INFINITY;
+				if (c >= 0 && scan.colCount[c] > 0) {
+					top = ParticleScan.surface(scan, c) + 0.5f * params.spacing();
+				}
+				if (frozen != null) {
+					FrozenColumns.Column column = frozen.get(x - originX, z - originZ);
+					if (column != null) {
+						top = Math.max(top, column.top(params.spacing()));
+					}
+				}
+				if (top > Float.NEGATIVE_INFINITY) {
+					tops.add(top + originY);
+				}
+			}
+		}
+		if (tops.isEmpty()) {
+			return Double.NaN;
+		}
+		float[] sorted = tops.toFloatArray();
+		java.util.Arrays.sort(sorted);
+		return sorted[sorted.length / 2];
 	}
 
 	/** Particles the frozen water (still water kept as a volume) stands for. */
@@ -1922,6 +2075,7 @@ public final class FluidSimulation implements AutoCloseable {
 		stepper.shutdown();
 		scanPool.shutdown();
 		playerBody.close();
+		entityBodies.close();
 		terrain.close();
 		if (frozenCollider != null) {
 			frozenCollider.close();

@@ -3,6 +3,22 @@
 All notable changes to Inertia are documented here. Versioning rules are described in
 [PLAN.md](PLAN.md#5-sürümleme).
 
+## [1.4.0]
+
+### Added
+- **The water and the other entities act on each other** (`entityInteraction`, on by default):
+  minecarts, boats, animals and monsters, dropped items, experience, falling blocks and TNT. Each
+  gets a box in the physics like the player, so the water flows around it and makes waves where it
+  moves. The water carries them along a current, slows them down and lifts them by how deep they
+  are in it: boats float high, items and experience float, animals and monsters float just so,
+  minecarts, falling blocks and TNT sink slowly. A fall into the water is cushioned. The lift
+  follows the height of the water around an entity (not the water splashed onto it), worked out
+  where the entity is at that moment, so a boat lies still instead of bobbing. The changes are made
+  on the integrated server at every tick; a boat the player rows is moved on the client. Moving
+  entities wake still water, and frozen water thaws below them. Measured natively at `ultra` with a
+  boat, a minecart, a cow and an item in a filling 7 x 7 box: 240 FPS, real time.
+- A player in a boat or a minecart is moved by the water through the vehicle.
+
 ## [1.3.1]
 
 ### Added

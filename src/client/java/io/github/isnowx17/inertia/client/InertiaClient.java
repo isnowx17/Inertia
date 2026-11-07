@@ -43,6 +43,8 @@ public final class InertiaClient implements ClientModInitializer {
 		FluidBucketItem.setClientHandler(fluids::releaseWater);
 		FluidSourceItem.setClientHandler(fluids::toggleSource);
 		ClientTickEvents.END_CLIENT_TICK.register(fluids::tick);
+		// The water acts on the entities of the integrated server at its own ticks.
+		net.fabricmc.fabric.api.event.lifecycle.v1.ServerTickEvents.START_SERVER_TICK.register(fluids::serverTick);
 		ClientPlayConnectionEvents.JOIN.register((handler, sender, client) -> fluids.onJoin(client));
 		ClientPlayConnectionEvents.DISCONNECT.register((handler, client) -> fluids.onDisconnect());
 		// A game tick that came while the GPU was busy is simulated on the first frame after.

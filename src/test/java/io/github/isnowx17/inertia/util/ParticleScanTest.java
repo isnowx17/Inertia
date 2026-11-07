@@ -226,4 +226,51 @@ class ParticleScanTest {
 			assertArrayEquals(Arrays.copyOf(host, count), Arrays.copyOf(gpu, count), "round " + round);
 		}
 	}
+
+	@Test
+	void measuresTheWaterAroundBodies() {
+		// Particles on a 0.1 lattice in [0, 4) x [0, 1) x [0, 4), all moving +x at 2 blocks/second.
+		int n = 40 * 10 * 40;
+		float[] pos = new float[n * 4];
+		float[] vel = new float[n * 4];
+		int i = 0;
+		for (int x = 0; x < 40; x++) {
+			for (int y = 0; y < 10; y++) {
+				for (int z = 0; z < 40; z++) {
+					pos[i * 4] = x * 0.1f + 0.05f;
+					pos[i * 4 + 1] = y * 0.1f + 0.05f;
+					pos[i * 4 + 2] = z * 0.1f + 0.05f;
+					vel[i * 4] = 2f;
+					i++;
+				}
+			}
+		}
+		float[] shells = {0f, 0f, 0f, 1f, 1f, 1f, 2f, 0.5f, 2f, 2.5f, 2f, 2.5f, 10f, 10f, 10f, 11f, 11f, 11f};
+		for (boolean grid : new boolean[] {false, true}) {
+			ParticleScan.Settings s = new ParticleScan.Settings();
+			s.minY = -100f;
+			s.maxDistSq = 1e9f;
+			s.perAxis = 10;
+			if (grid) {
+				s.gridX0 = -1;
+				s.gridZ0 = -1;
+				s.gridSizeX = 6;
+				s.gridSizeZ = 6;
+			}
+			s.setBodies(shells, 3);
+			ParticleScan.Part total = new ParticleScan.Part();
+			total.reset(0, 10, s);
+			for (int c = 0; c < 4; c++) {
+				ParticleScan.Part part = new ParticleScan.Part();
+				part.reset(0, 10, s);
+				ParticleScan.scan(pos, vel, 4, c * n / 4, (c + 1) * n / 4, s, part);
+				ParticleScan.merge(total, part);
+			}
+			assertEquals(10 * 10 * 10, total.bodyInside[0], "grid " + grid);
+			assertEquals(5 * 5 * 5, total.bodyInside[1], "grid " + grid);
+			assertEquals(0, total.bodyInside[2], "grid " + grid);
+			assertEquals(2f * 1000, total.bodySum[0], 1e-2f);
+			assertEquals(0f, total.bodySum[1], 1e-6f);
+		}
+	}
 }
