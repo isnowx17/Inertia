@@ -21,7 +21,7 @@ public final class InertiaConfig {
 	public static final String RENDER_SURFACE = "surface";
 	public static final String RENDER_PARTICLES = "particles";
 	public static final String QUALITY_CUSTOM = "custom";
-	private static final int CURRENT_VERSION = 10;
+	private static final int CURRENT_VERSION = 11;
 
 	/** Version of this file's defaults; older files get changed defaults migrated on load. */
 	public int configVersion = 0;
@@ -91,6 +91,12 @@ public final class InertiaConfig {
 	 * {@code "particles"} (every particle as a sphere; cheaper, useful for debugging).
 	 */
 	public String renderMode = RENDER_SURFACE;
+
+	/**
+	 * Build the water surface on the GPU every frame (with the water shader, on NVIDIA's OpenGL): it
+	 * moves as smoothly as the frame rate. Falls back to the CPU where it cannot work.
+	 */
+	public boolean gpuSurface = true;
 
 	/** Surface smoothing radius relative to the surface cell size. Larger is smoother and rounder. */
 	public float surfaceSmoothness = 2.0f;
@@ -280,6 +286,10 @@ public final class InertiaConfig {
 		if (configVersion < 9 && "high".equals(quality)) {
 			// 0.6.1: the default quality became "ultra"; files that still had the old default follow it.
 			quality = "ultra";
+		}
+		if (configVersion < 11) {
+			// 2.0.0: the surface is built on the GPU every frame (falls back to the CPU where it cannot).
+			gpuSurface = true;
 		}
 		configVersion = CURRENT_VERSION;
 	}

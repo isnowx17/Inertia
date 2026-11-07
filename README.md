@@ -51,6 +51,7 @@ bucket are unchanged. The water is not saved: it disappears when you leave the w
 | `despawnDistance` | 96 | Water further away from you than this is removed. |
 | `playerInteraction` | true | Whether water pushes, slows and lifts the player. |
 | `waterShader` | true | Draw the water with Inertia's shader (refraction, depth colour, ripples, sun glints). Falls back automatically if unsupported. |
+| `gpuSurface` | true | Build the water surface on the GPU every frame (with the water shader, NVIDIA OpenGL). Falls back to the CPU where it cannot work. |
 | `rippleStrength` | 1.0 | Strength of the surface ripples; 0 = perfectly smooth. |
 | `refractionStrength` | 1.0 | How strongly the water bends what is behind it. |
 | `waterAbsorption` | 1.0 | How quickly light is absorbed; higher makes deep water darker and bluer. |
@@ -135,6 +136,13 @@ jars, creates the tag `v<version>` and publishes the release.
   eight surrounding grid nodes, the density is smoothed with a small separable blur, and surface
   nets extract the surface. Bricks of the grid deep inside a body of water are skipped, and so are
   bricks the surface cannot cross. The job reads the simulation's arrays without copying them.
+- **GPU surface** (`gpuSurface`): Inertia's own CUDA kernels (bound through Java's foreign
+  function interface, compiled to PTX) run in PhysX's CUDA context, take each physics step's
+  particles straight from the GPU and build the surface there every frame: the particles are spread
+  over a sparse grid of 16³ bricks, smoothed, and surface nets write the vertices and indices right
+  into the OpenGL buffers the game draws (CUDA-OpenGL interop, two buffers: one drawn while the next
+  is built). The water is shown one tick behind and moved evenly between the last two physics steps.
+  The CPU surface below is the fallback, and still feeds the foam.
 - **Rendering:** the surface stays on the GPU: each new surface is uploaded once (one vertex per
   surface point, 32-bit indices), and every frame the vertex shader moves the vertices along their
   flow velocity for the time since the data was taken, so the water flows smoothly between

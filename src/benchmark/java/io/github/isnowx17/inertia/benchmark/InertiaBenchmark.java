@@ -89,6 +89,11 @@ public final class InertiaBenchmark implements ClientModInitializer {
 		new BlockPos[] {new BlockPos(0, -45, 0)},
 		FILL.phases(), FILL.stopSources(), FILL.moveToSurface(), FILL.moveInside(), FILL.finish());
 
+	/** An oak room 18 x 18 flooded by two sources high above (as a player's test room). */
+	private static final Scene ROOM = new Scene(
+		new BlockPos[] {new BlockPos(9, -42, 9), new BlockPos(5, -42, 1)},
+		FILL.phases(), FILL.stopSources(), FILL.moveToSurface(), FILL.moveInside(), FILL.finish());
+
 	private enum Stage { WAIT_TITLE, CREATING, IN_WORLD, DONE }
 
 	private String label;
@@ -101,6 +106,7 @@ public final class InertiaBenchmark implements ClientModInitializer {
 	private Phase phase;
 	private final List<Phase> phases = new ArrayList<>();
 	private int stopWorldTick = -1;
+	private long lastShot = -1;
 	private boolean hold;
 	private double holdX;
 	private double holdY;
@@ -122,7 +128,8 @@ public final class InertiaBenchmark implements ClientModInitializer {
 			return;
 		}
 		String sceneName = System.getProperty("inertia.benchmark.scene", "heavy");
-		scene = "light".equals(sceneName) ? LIGHT : "fill".equals(sceneName) ? FILL : "fill1".equals(sceneName) ? FILL_ONE : HEAVY;
+		scene = "light".equals(sceneName) ? LIGHT : "fill".equals(sceneName) ? FILL : "fill1".equals(sceneName) ? FILL_ONE
+			: "room".equals(sceneName) ? ROOM : HEAVY;
 		LOGGER.info("Inertia benchmark '{}' armed ({} scene)", label, sceneName());
 		ScreenEvents.AFTER_INIT.register((client, screen, width, height) -> {
 			if (stage == Stage.WAIT_TITLE && !(screen instanceof CreateWorldScreen) && client.level == null
@@ -153,7 +160,7 @@ public final class InertiaBenchmark implements ClientModInitializer {
 	}
 
 	private String sceneName() {
-		return scene == LIGHT ? "light" : scene == FILL ? "fill" : scene == FILL_ONE ? "fill1" : "heavy";
+		return scene == LIGHT ? "light" : scene == FILL ? "fill" : scene == FILL_ONE ? "fill1" : scene == ROOM ? "room" : "heavy";
 	}
 
 	private void createWorld(Minecraft client) {
@@ -264,6 +271,16 @@ public final class InertiaBenchmark implements ClientModInitializer {
 		worldTicks++;
 		long tickNanos = System.nanoTime() - tickStart;
 		holdStill(client);
+		if (worldTicks == 40 && Boolean.getBoolean("inertia.gpuprobe")) {
+			try {
+				io.github.isnowx17.inertia.client.gpu.GpuProbe.run();
+			} catch (Throwable t) {
+				LOGGER.error("GPUPROBE failed", t);
+			}
+			stage = Stage.DONE;
+			client.stop();
+			return;
+		}
 		if (worldTicks == 20) {
 			applyOptions(client);
 			command(client, "time set 6000");
@@ -272,7 +289,11 @@ public final class InertiaBenchmark implements ClientModInitializer {
 			command(client, "fill -8 -60 -8 8 -55 8 minecraft:stone");
 			command(client, "fill -7 -60 -7 7 -55 7 minecraft:air");
 			command(client, "fill -12 -51 -12 -11 -51 -11 minecraft:stone");
-			if ((scene == FILL || scene == FILL_ONE)) {
+			if (scene == ROOM) {
+				command(client, "fill -10 -61 -10 10 -50 10 minecraft:oak_planks");
+				command(client, "fill -9 -60 -9 9 -50 9 minecraft:air");
+				moveTo(client, -6.5, -57.5, -6.5, -45, -12);
+			} else if ((scene == FILL || scene == FILL_ONE)) {
 				command(client, "fill -4 -61 -4 4 -44 4 minecraft:stone");
 				command(client, "fill -3 -60 -3 3 -44 3 minecraft:air");
 				// The water is watched through a glass wall.
@@ -360,6 +381,25 @@ public final class InertiaBenchmark implements ClientModInitializer {
 			command(client, "summon minecraft:minecart 2.5 -47 -1.5");
 			command(client, "summon minecraft:cow -1.5 -47 2.5");
 			command(client, "summon minecraft:item 2.5 -47 2.5 {Item:{id:\"minecraft:oak_log\",count:1}}");
+		}
+		if ((scene == FILL_ONE || scene == ROOM) && Boolean.getBoolean("inertia.bench.streamshots")) {
+			// Close-ups of the falling stream: the GPU's surface, then the CPU's in the same game.
+			if (event(15, t, scene == ROOM ? 600 : 1690)) {
+				if (scene == ROOM) {
+					// Facing the corner the first stream falls down along the walls.
+					moveTo(client, 4.5, -56.5, 4.5, -45, -25);
+				} else {
+					moveTo(client, 0.5, -50.5, -2.6, 0, 35);
+				}
+			}
+			int from = scene == ROOM ? 610 : 1700;
+			if (t >= from && t < from + 200 && t % 10 == 0 && lastShot != t) {
+				lastShot = t;
+				boolean gpu = t < from + 100;
+				InertiaClient.fluids().config().gpuSurface = gpu;
+				Screenshot.grab(client.gameDirectory, "bench-" + label + "-stream-" + t + (gpu ? "-gpu" : "-cpu") + ".png",
+					client.gameRenderer.mainRenderTarget(), 1, m -> { });
+			}
 		}
 		if (event(10, t, scene.stopSources())) {
 			fluids.toggleSource(client.player, null, true);

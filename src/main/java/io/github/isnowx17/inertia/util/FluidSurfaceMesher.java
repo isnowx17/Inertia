@@ -170,6 +170,29 @@ public final class FluidSurfaceMesher {
 		return cellSize;
 	}
 
+	/**
+	 * The smoothing as one kernel per axis: {@link #blurPasses} passes of {@code [a, 1 - 2a, a]}
+	 * combined, {@code 2 * passes + 1} weights (just {@code [1]} without smoothing).
+	 */
+	public float[] blurKernel() {
+		float[] k = {1f};
+		for (int pass = 0; pass < blurPasses; pass++) {
+			float[] next = new float[k.length + 2];
+			for (int i = 0; i < k.length; i++) {
+				next[i] += k[i] * blurWeight;
+				next[i + 1] += k[i] * (1f - 2f * blurWeight);
+				next[i + 2] += k[i] * blurWeight;
+			}
+			k = next;
+		}
+		return k;
+	}
+
+	/** Particles touching a brick that count as full (a deep brick has only full neighbours). */
+	public float fullCount() {
+		return fullCount;
+	}
+
 	/** Builds the surface of {@code count} particles stored as x, y, z triples. */
 	public Mesh mesh(float[] positions, float[] velocities, int count, Mesh target) {
 		return mesh(positions, velocities, count, 3, target);

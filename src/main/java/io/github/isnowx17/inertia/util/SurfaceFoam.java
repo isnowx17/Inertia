@@ -77,7 +77,9 @@ public final class SurfaceFoam {
 	/** Weighted tracers per square block at which 63 % of the surface is covered (coverage 1). */
 	private static final float FULL_DENSITY = 1700f;
 	/** Largest foam map side in texels; bigger foam areas use a coarser map. */
-	private static final int MAX_MAP_SIZE = 1024;
+	private static final int MAX_MAP_SIZE = 2048;
+	/** Blocks over which the foam fades out where the map is cut around the camera. */
+	private static final float FOCUS_FADE = 3f;
 	private static final int MIN_MAP_SIZE = 64;
 	public static final int MAX_LEVELS = 6;
 	/** Empty texels kept around the foam. */
@@ -223,6 +225,8 @@ public final class SurfaceFoam {
 
 	// Map scratch.
 	private float[] accumulation = new float[0];
+	/** The foam map's resolution last time. */
+	private int mapTexelsPerBlock = Integer.MAX_VALUE;
 	private float[] blurScratch = new float[0];
 	private byte[] columnCodes = new byte[0];
 	private int[] texelColumns = new int[0];
@@ -731,6 +735,16 @@ public final class SurfaceFoam {
 
 	/** Splats the tracers into {@code map} (level 0 and its mip levels). */
 	public void buildMap(Map map) {
+		buildMap(map, Float.NaN, Float.NaN);
+	}
+
+	/**
+	 * Splats the tracers into {@code map} (level 0 and its mip levels). When the foam spreads wider
+	 * than the map holds at full resolution, the map covers the part around ({@code focusX},
+	 * {@code focusZ}) (the camera, in local coordinates) at full resolution instead of all of it
+	 * blurred; without a focus it lowers the resolution.
+	 */
+	public void buildMap(Map map, float focusX, float focusZ) {
 		map.version++;
 		if (count == 0 || !surfaceValid) {
 			map.empty = true;
@@ -747,6 +761,31 @@ public final class SurfaceFoam {
 			maxZ = Math.max(maxZ, pz[i]);
 		}
 		int tpb = settings.texelsPerBlock();
+		// Where the map cuts through the foam (around the camera), the foam fades out towards the cut.
+		float fadeMinX = Float.NEGATIVE_INFINITY;
+		float fadeMaxX = Float.POSITIVE_INFINITY;
+		float fadeMinZ = Float.NEGATIVE_INFINITY;
+		float fadeMaxZ = Float.POSITIVE_INFINITY;
+		if (!Float.isNaN(focusX) && !Float.isNaN(focusZ)) {
+			float span = (MAX_MAP_SIZE - 2 * MAP_MARGIN - 2) / (float) tpb;
+			if (maxX - minX > span) {
+				float c = Math.max(minX + span * 0.5f, Math.min(maxX - span * 0.5f, focusX));
+				fadeMinX = minX > c - span * 0.5f ? Float.NEGATIVE_INFINITY : c - span * 0.5f;
+				fadeMaxX = maxX < c + span * 0.5f ? Float.POSITIVE_INFINITY : c + span * 0.5f;
+				minX = c - span * 0.5f;
+				maxX = c + span * 0.5f;
+			}
+			if (maxZ - minZ > span) {
+				float c = Math.max(minZ + span * 0.5f, Math.min(maxZ - span * 0.5f, focusZ));
+				fadeMinZ = minZ > c - span * 0.5f ? Float.NEGATIVE_INFINITY : c - span * 0.5f;
+				fadeMaxZ = maxZ < c + span * 0.5f ? Float.POSITIVE_INFINITY : c + span * 0.5f;
+				minZ = c - span * 0.5f;
+				maxZ = c + span * 0.5f;
+			}
+		}
+		// Once at a lower resolution, back to a higher one only with room to spare, so foam at the
+		// edge of the largest area does not switch between sharp and blurred every step.
+		int fit = tpb > mapTexelsPerBlock ? MAX_MAP_SIZE * 7 / 8 : MAX_MAP_SIZE;
 		int x0;
 		int z0;
 		int needW;
@@ -756,11 +795,13 @@ public final class SurfaceFoam {
 			z0 = (int) Math.floor(minZ * tpb) - MAP_MARGIN;
 			needW = (int) Math.ceil(maxX * tpb) + MAP_MARGIN + 1 - x0;
 			needH = (int) Math.ceil(maxZ * tpb) + MAP_MARGIN + 1 - z0;
-			if ((needW <= MAX_MAP_SIZE && needH <= MAX_MAP_SIZE) || tpb <= 2) {
+			if ((needW <= fit && needH <= fit) || tpb <= 2) {
 				break;
 			}
 			tpb = Math.max(2, tpb / 2);
+			fit = tpb > mapTexelsPerBlock ? MAX_MAP_SIZE * 7 / 8 : MAX_MAP_SIZE;
 		}
+		mapTexelsPerBlock = tpb;
 		int w = Math.min(MAX_MAP_SIZE, Math.max(MIN_MAP_SIZE, Integer.highestOneBit(needW - 1) << 1));
 		int h = Math.min(MAX_MAP_SIZE, Math.max(MIN_MAP_SIZE, Integer.highestOneBit(needH - 1) << 1));
 		int n = w * h;
@@ -776,6 +817,10 @@ public final class SurfaceFoam {
 			float s = strength(k);
 			if (s <= 0f) {
 				continue;
+			}
+			float edge = Math.min(Math.min(px[k] - fadeMinX, fadeMaxX - px[k]), Math.min(pz[k] - fadeMinZ, fadeMaxZ - pz[k]));
+			if (edge < FOCUS_FADE) {
+				s *= Math.max(0f, edge / FOCUS_FADE);
 			}
 			float u = px[k] * tpb - x0 - 0.5f;
 			float v = pz[k] * tpb - z0 - 0.5f;

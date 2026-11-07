@@ -45,6 +45,8 @@ layout(location = 6) out vec2 texCoord0;
 const float SPRAY_DEPTH_PULL = 0.2;
 // FluidSurfaceRenderer.SPRAY_FADE: spray fades out during its last this many seconds of life.
 const float SPRAY_FADE = 0.8;
+// The physics' gravity (FluidSimulation.GRAVITY), blocks per second squared.
+const float SPRAY_GRAVITY = -9.81;
 // OverlayTexture.NO_OVERLAY (u 0, v 10).
 const ivec2 NO_OVERLAY = ivec2(0, 10);
 
@@ -63,6 +65,10 @@ void main() {
 
     float dt = TextureMat[0].w;
     vec3 position = (Position + Velocity * dt) + ModelOffset;
+    if (TextureMat[1].w >= 0.5) {
+        // Spray flies through the air: it falls along a curve between two physics steps, not a line.
+        position.y += 0.5 * SPRAY_GRAVITY * dt * dt;
+    }
     vec3 normal;
     vec4 color;
     if (TextureMat[1].w < 0.5) {

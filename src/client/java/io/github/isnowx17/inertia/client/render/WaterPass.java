@@ -158,7 +158,16 @@ public final class WaterPass implements AutoCloseable {
 	 *
 	 * @param cullBackFaces whether the camera is outside the water, so faces turned away are hidden
 	 */
-	public record Surface(ByteBuffer vertices, int vertexCount, ByteBuffer indices, int indexCount, long serial, boolean cullBackFaces) {
+	public record Surface(ByteBuffer vertices, int vertexCount, ByteBuffer indices, int indexCount, long serial, boolean cullBackFaces,
+		GpuBuffer builtVertices, GpuBuffer builtIndices) {
+		/** A surface already in GPU buffers (built there, see GpuSurface): nothing to upload. */
+		public static Surface built(GpuBuffer vertices, int vertexCount, GpuBuffer indices, int indexCount, boolean cullBackFaces) {
+			return new Surface(null, vertexCount, null, indexCount, -1L, cullBackFaces, vertices, indices);
+		}
+
+		public Surface(ByteBuffer vertices, int vertexCount, ByteBuffer indices, int indexCount, long serial, boolean cullBackFaces) {
+			this(vertices, vertexCount, indices, indexCount, serial, cullBackFaces, null, null);
+		}
 	}
 
 	/**
@@ -190,10 +199,9 @@ public final class WaterPass implements AutoCloseable {
 	private long uploadedSurface = Long.MIN_VALUE;
 	private GpuBuffer particleBuffer;
 	private long uploadedParticles = Long.MIN_VALUE;
-	private GpuTexture foamTexture;
-	private GpuTextureView foamView;
-	private SurfaceFoam.Map uploadedFoam;
-	private long uploadedFoamVersion;
+	/** The two newest foam maps: a surface built a moment ago still needs the one of its moment. */
+	private final FoamSlot[] foamSlots = {new FoamSlot(), new FoamSlot()};
+	private int newestFoamSlot;
 	private ByteBuffer foamUpload;
 	private GpuTexture emptyFoamTexture;
 	private GpuTextureView emptyFoamView;
@@ -280,7 +288,7 @@ public final class WaterPass implements AutoCloseable {
 	 * @param parameters   shader parameters, see {@code water.vsh}
 	 */
 	public void draw(
-		Surface surface, Particles particles, SurfaceFoam.Map foam,
+		Surface surface, Particles particles, SurfaceFoam.Map foam, FoamKey surfaceFoam,
 		Vector3f sunDirection, float daylight, Vector3f originOffset, Matrix4f parameters
 	) {
 		boolean drawSurface = surface != null && surface.indexCount() > 0 && surface.vertexCount() > 0;
@@ -305,9 +313,9 @@ public final class WaterPass implements AutoCloseable {
 			int height = color.getHeight(0);
 			encoder.copyTextureToTexture(color, sceneColor, 0, 0, 0, 0, 0, width, height);
 			encoder.copyTextureToTexture(depth, sceneDepth, 0, 0, 0, 0, 0, width, height);
-			foamMap = foamView(encoder, foam);
-			// The surface is uploaded only when it changed.
-			if (surface.serial() != uploadedSurface) {
+			foamMap = foamView(encoder, foam, surfaceFoam);
+			// The surface is uploaded only when it changed (and not at all when it was built on the GPU).
+			if (surface.builtVertices() == null && surface.serial() != uploadedSurface) {
 				uploadSurface(encoder, surface);
 			}
 		}
@@ -342,7 +350,9 @@ public final class WaterPass implements AutoCloseable {
 			RenderSystem.bindDefaultUniforms(pass);
 
 			if (drawSurface) {
-				GpuBufferSlice vertices = surfaceVertices.slice(0, (long) surface.vertexCount() * WaterVertexLayout.STRIDE);
+				GpuBuffer vertexBuffer = surface.builtVertices() != null ? surface.builtVertices() : surfaceVertices;
+				GpuBuffer indexBuffer = surface.builtIndices() != null ? surface.builtIndices() : surfaceIndices;
+				GpuBufferSlice vertices = vertexBuffer.slice(0, (long) surface.vertexCount() * WaterVertexLayout.STRIDE);
 				boolean cull = surface.cullBackFaces();
 
 				// With all faces drawn: first the depth of the nearest water surface.
@@ -352,7 +362,7 @@ public final class WaterPass implements AutoCloseable {
 					pass.setUniform("Sampler0", surfaceTexture.getTextureView(), surfaceTexture.getSampler());
 					pass.setUniform("Sampler2", minecraft.gameRenderer.lightmap(), samplers.getClampToEdge(FilterMode.LINEAR));
 					pass.setVertexBuffer(0, vertices);
-					pass.setIndexBuffer(surfaceIndices, IndexType.INT);
+					pass.setIndexBuffer(indexBuffer, IndexType.INT);
 					pass.drawIndexed(surface.indexCount(), 1, 0, 0, 0);
 				}
 
@@ -365,7 +375,7 @@ public final class WaterPass implements AutoCloseable {
 				pass.setUniform("SceneDepth", sceneDepthView, samplers.getClampToEdge(FilterMode.NEAREST));
 				pass.setUniform("FoamMap", foamMap, samplers.getClampToEdge(FilterMode.LINEAR, true));
 				pass.setVertexBuffer(0, vertices);
-				pass.setIndexBuffer(surfaceIndices, IndexType.INT);
+				pass.setIndexBuffer(indexBuffer, IndexType.INT);
 				pass.drawIndexed(surface.indexCount(), 1, 0, 0, 0);
 			}
 
@@ -430,8 +440,36 @@ public final class WaterPass implements AutoCloseable {
 		uploadedParticles = particles.serial();
 	}
 
-	/** Uploads a new foam map (all mip levels) if it changed; returns the view to bind. */
-	private GpuTextureView foamView(CommandEncoder encoder, SurfaceFoam.Map map) {
+	/** A foam map as it was at one moment: the map object and its version then. */
+	public record FoamKey(SurfaceFoam.Map map, long version) {
+	}
+
+	private static final class FoamSlot {
+		GpuTexture texture;
+		GpuTextureView view;
+		SurfaceFoam.Map map;
+		long version;
+
+		boolean holds(SurfaceFoam.Map m, long v) {
+			return view != null && map == m && version == v;
+		}
+
+		void close() {
+			if (view != null) {
+				view.close();
+				texture.close();
+			}
+			view = null;
+			texture = null;
+			map = null;
+		}
+	}
+
+	/**
+	 * Uploads a new foam map (all mip levels) if it changed; returns the view to bind: the one of
+	 * {@code wanted} (the moment the surface was built for) while it is still kept, otherwise the newest.
+	 */
+	private GpuTextureView foamView(CommandEncoder encoder, SurfaceFoam.Map map, FoamKey wanted) {
 		var device = RenderSystem.getDevice();
 		if (map == null || map.empty) {
 			if (emptyFoamTexture == null) {
@@ -443,48 +481,62 @@ public final class WaterPass implements AutoCloseable {
 			}
 			return emptyFoamView;
 		}
-		if (foamTexture == null || foamTexture.getWidth(0) != map.width || foamTexture.getHeight(0) != map.height
-			|| foamTexture.getMipLevels() != map.levels) {
-			closeFoamTexture();
-			int usage = GpuTexture.USAGE_COPY_DST | GpuTexture.USAGE_TEXTURE_BINDING;
-			foamTexture = device.createTexture("Inertia foam", usage, GpuFormat.RG8_UNORM, map.width, map.height, 1, map.levels);
-			foamView = device.createTextureView(foamTexture, 0, map.levels);
-			uploadedFoam = null;
+		int current = foamSlots[0].holds(map, map.version) ? 0 : foamSlots[1].holds(map, map.version) ? 1 : -1;
+		if (current < 0) {
+			// Over the older map, unless that is the one the surface still needs.
+			int older = 1 - newestFoamSlot;
+			boolean olderWanted = wanted != null && foamSlots[older].holds(wanted.map(), wanted.version());
+			current = olderWanted ? newestFoamSlot : older;
+			upload(encoder, foamSlots[current], map);
+			newestFoamSlot = current;
 		}
-		if (uploadedFoam != map || uploadedFoamVersion != map.version) {
-			for (int level = 0; level < map.levels; level++) {
-				int w = map.width >> level;
-				int h = map.height >> level;
-				int bytes = w * h * 2;
-				ByteBuffer data;
-				if (map.direct != null && map.direct.capacity() >= map.offsets[level] + bytes) {
-					// Filled by the surface job: no copy on the render thread.
-					data = map.direct.duplicate().limit(map.offsets[level] + bytes).position(map.offsets[level]);
-				} else {
-					if (foamUpload == null || foamUpload.capacity() < bytes) {
-						foamUpload = ByteBuffer.allocateDirect(Math.max(bytes, 1 << 16));
-					}
-					foamUpload.clear();
-					foamUpload.put(map.data, map.offsets[level], bytes);
-					foamUpload.flip();
-					data = foamUpload;
+		if (wanted != null) {
+			for (FoamSlot slot : foamSlots) {
+				if (slot.holds(wanted.map(), wanted.version())) {
+					return slot.view;
 				}
-				encoder.writeToTexture(foamTexture, data, level, 0, 0, 0, w, h);
 			}
-			uploadedFoam = map;
-			uploadedFoamVersion = map.version;
 		}
-		return foamView;
+		return foamSlots[current].view;
+	}
+
+	private void upload(CommandEncoder encoder, FoamSlot slot, SurfaceFoam.Map map) {
+		GpuTexture texture = slot.texture;
+		if (texture == null || texture.getWidth(0) != map.width || texture.getHeight(0) != map.height
+			|| texture.getMipLevels() != map.levels) {
+			slot.close();
+			int usage = GpuTexture.USAGE_COPY_DST | GpuTexture.USAGE_TEXTURE_BINDING;
+			var device = RenderSystem.getDevice();
+			slot.texture = device.createTexture("Inertia foam", usage, GpuFormat.RG8_UNORM, map.width, map.height, 1, map.levels);
+			slot.view = device.createTextureView(slot.texture, 0, map.levels);
+		}
+		for (int level = 0; level < map.levels; level++) {
+			int w = map.width >> level;
+			int h = map.height >> level;
+			int bytes = w * h * 2;
+			ByteBuffer data;
+			if (map.direct != null && map.direct.capacity() >= map.offsets[level] + bytes) {
+				// Filled by the surface job: no copy on the render thread.
+				data = map.direct.duplicate().limit(map.offsets[level] + bytes).position(map.offsets[level]);
+			} else {
+				if (foamUpload == null || foamUpload.capacity() < bytes) {
+					foamUpload = ByteBuffer.allocateDirect(Math.max(bytes, 1 << 16));
+				}
+				foamUpload.clear();
+				foamUpload.put(map.data, map.offsets[level], bytes);
+				foamUpload.flip();
+				data = foamUpload;
+			}
+			encoder.writeToTexture(slot.texture, data, level, 0, 0, 0, w, h);
+		}
+		slot.map = map;
+		slot.version = map.version;
 	}
 
 	private void closeFoamTexture() {
-		if (foamView != null) {
-			foamView.close();
-			foamTexture.close();
+		for (FoamSlot slot : foamSlots) {
+			slot.close();
 		}
-		foamView = null;
-		foamTexture = null;
-		uploadedFoam = null;
 	}
 
 	private void ensureSceneTextures(GpuTexture color, GpuTexture depth) {

@@ -3,6 +3,41 @@
 All notable changes to Inertia are documented here. Versioning rules are described in
 [PLAN.md](PLAN.md#5-sürümleme).
 
+## [2.0.0]
+
+The big optimisation update: the water surface is built on the graphics card, every frame.
+
+### Added
+- **The water surface is built on the GPU** (`gpuSurface`, on by default; with the water shader on
+  NVIDIA). Inertia's own CUDA kernels, running in PhysX's CUDA context, take the particles straight
+  from the GPU and build the surface there: they spread the particles over a sparse grid of 16³
+  bricks, smooth it, and extract the surface with surface nets right into the OpenGL buffers the
+  game draws, so the surface never goes through the CPU. One surface takes about 1 ms on the GPU and
+  0.5 ms on the CPU with 140,000 vertices (an RTX 4090 Laptop), and it is rebuilt up to the frame
+  rate (70 to 90 times a second there) instead of once per physics step. Where CUDA or the OpenGL
+  link is not available the CPU builds the surface as before. Settings files from before 2.0.0 turn
+  it on once.
+- **The water moves smoothly between physics steps.** It is shown one tick behind and moved evenly
+  from the previous physics step to the latest one (on the GPU, and between CPU surfaces as well),
+  instead of being pushed along its flow and jumping back when the next step came in. Frozen still
+  water, foam and spray follow the same timeline.
+
+### Fixed
+- Ripples, caustics and the light in the water moved in small steps, the longer the computer had been
+  on the more: the shader's clock lost its precision as a float second count of the uptime.
+- Spray (PhysX's white particles) jumped back at every physics step: it moved with the water's
+  velocity where it was. Each spray particle is now found again in the next step and moves the way it
+  really went, falling along a curve; when not all can be drawn, the same ones are drawn every step.
+- The water no longer disappears for a frame (showing the sky or the ground): a surface whose foam
+  belonged to another foam map hid all foam, and a surface that did not fit its buffers was drawn
+  with holes. Each surface is drawn with the foam map it was built for, and a surface that does not
+  fit is built again with more room before it is shown (the room grows before it runs out).
+- Foam turned blurry and sharp again in turn when it spread over a wide area: the whole foam map lost
+  half its resolution. The map now holds 64 blocks at full resolution and, beyond that, covers the
+  part around the camera, fading out where it is cut.
+- Foam close up no longer looks grainy at high screen resolutions: its bubbles are only drawn where
+  they are a few pixels wide.
+
 ## [1.4.1]
 
 ### Fixed

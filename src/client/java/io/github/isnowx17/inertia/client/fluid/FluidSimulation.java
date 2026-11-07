@@ -265,6 +265,16 @@ public final class FluidSimulation implements AutoCloseable {
 	private boolean stepHidesFoam;
 
 	private float[] currPos;
+	/**
+	 * Positions at the start of the latest step, for the same particles as {@link #currPos} (kept in
+	 * step with it when particles are added or removed), and when the step before that was read back.
+	 */
+	private float[] prevPos;
+	private long prevReadBackNanos;
+	/** When the running step was started, and the latest two finished ones. */
+	private long stepLaunchNanos;
+	private long finishedLaunchNanos;
+	private long previousLaunchNanos;
 	private float[] velocity;
 
 	private int activeCount;
@@ -345,6 +355,7 @@ public final class FluidSimulation implements AutoCloseable {
 		}
 
 		currPos = new float[0];
+		prevPos = new float[0];
 		velocity = new float[0];
 		allocateParticleBuffer(capacity);
 
@@ -484,6 +495,7 @@ public final class FluidSimulation implements AutoCloseable {
 		nextPos = new float[newCapacity * STRIDE];
 		nextVel = new float[newCapacity * STRIDE];
 		currPos = java.util.Arrays.copyOf(currPos, newCapacity * STRIDE);
+		prevPos = java.util.Arrays.copyOf(prevPos, newCapacity * STRIDE);
 		velocity = java.util.Arrays.copyOf(velocity, newCapacity * STRIDE);
 		capacity = newCapacity;
 	}
@@ -587,6 +599,9 @@ public final class FluidSimulation implements AutoCloseable {
 					currPos[i * STRIDE] = px;
 					currPos[i * STRIDE + 1] = py;
 					currPos[i * STRIDE + 2] = pz;
+					prevPos[i * STRIDE] = px;
+					prevPos[i * STRIDE + 1] = py;
+					prevPos[i * STRIDE + 2] = pz;
 					velocity[i * STRIDE] = vx;
 					velocity[i * STRIDE + 1] = vy;
 					velocity[i * STRIDE + 2] = vz;
@@ -697,6 +712,9 @@ public final class FluidSimulation implements AutoCloseable {
 			currPos[i * STRIDE] = px;
 			currPos[i * STRIDE + 1] = py;
 			currPos[i * STRIDE + 2] = pz;
+			prevPos[i * STRIDE] = px;
+			prevPos[i * STRIDE + 1] = py;
+			prevPos[i * STRIDE + 2] = pz;
 			velocity[i * STRIDE] = vx;
 			velocity[i * STRIDE + 1] = vy;
 			velocity[i * STRIDE + 2] = vz;
@@ -794,6 +812,9 @@ public final class FluidSimulation implements AutoCloseable {
 				currPos[i * STRIDE] = px;
 				currPos[i * STRIDE + 1] = py;
 				currPos[i * STRIDE + 2] = pz;
+				prevPos[i * STRIDE] = px;
+				prevPos[i * STRIDE + 1] = py;
+				prevPos[i * STRIDE + 2] = pz;
 				velocity[i * STRIDE] = vx;
 				velocity[i * STRIDE + 1] = vy;
 				velocity[i * STRIDE + 2] = vz;
@@ -1106,6 +1127,14 @@ public final class FluidSimulation implements AutoCloseable {
 		stepHidesFoam = tick < foamHiddenUntilTick;
 		stepSubsteps = solverLevels[solverLevel].substeps();
 		stepSubstepSeconds = TICK_SECONDS / stepSubsteps;
+		// The GPU surface (if used) takes the particles before the step starts changing them.
+		// The particles of a step stand for the moment a tick after it was started: steps start with the
+		// (even) game ticks, while their results come in whenever the GPU is done.
+		long tickNanos = (long) (TICK_SECONDS * 1e9);
+		io.github.isnowx17.inertia.client.gpu.GpuSurface.feed(devicePositions, prevPos, activeCount,
+			previousLaunchNanos != 0L ? previousLaunchNanos + tickNanos : 0L, finishedLaunchNanos + tickNanos,
+			originX, originY, originZ, frozen != null ? frozen.boxes() : NO_BOXES);
+		stepLaunchNanos = System.nanoTime();
 		pendingStep = stepper.submit(this::step);
 	}
 
@@ -1367,9 +1396,12 @@ public final class FluidSimulation implements AutoCloseable {
 			throw new IllegalStateException("Physics step failed", e.getCause());
 		}
 
-		float[] oldPos = currPos;
+		// The positions at the start of the step become the previous ones: the renderer moves the water
+		// from them to the new ones over the next tick (see Snapshot).
+		float[] oldPrev = prevPos;
+		prevPos = currPos;
 		currPos = nextPos;
-		nextPos = reusable(oldPos);
+		nextPos = reusable(oldPrev.length == currPos.length ? oldPrev : new float[currPos.length]);
 		float[] oldVelocity = velocity;
 		velocity = nextVel;
 		nextVel = reusable(oldVelocity);
@@ -1377,6 +1409,9 @@ public final class FluidSimulation implements AutoCloseable {
 		foam = nextFoam;
 		nextFoam = reusable(oldFoam);
 		foamCount = nextFoamCount;
+		prevReadBackNanos = readBackNanos;
+		previousLaunchNanos = finishedLaunchNanos;
+		finishedLaunchNanos = stepLaunchNanos;
 		readBackNanos = stepFinishedNanos;
 		ParticleScan.Part finished = nextScan;
 		nextScan = scan;
@@ -1503,10 +1538,17 @@ public final class FluidSimulation implements AutoCloseable {
 	 */
 	public Snapshot lease() {
 		float[] frozenBoxes = frozen != null ? frozen.boxes() : new float[0];
+		// The moments the particles stand for: a tick after their steps were started (see tick), the same
+		// for the CPU's surface as for the GPU's.
+		long tickNanos = (long) (TICK_SECONDS * 1e9);
+		long current = finishedLaunchNanos != 0L ? finishedLaunchNanos + tickNanos : readBackNanos;
+		long previous = previousLaunchNanos != 0L ? previousLaunchNanos + tickNanos : 0L;
 		Snapshot snapshot = new Snapshot(currPos, velocity, activeCount, foam, foamCount, originX, originY, originZ,
-			tick, readBackNanos, version, timeScale, frozenBoxes, frozenBoxes.length / 6);
+			tick, current, version, timeScale, frozenBoxes, frozenBoxes.length / 6, prevPos,
+			sleeping ? current : previous);
 		synchronized (leased) {
 			leased.add(currPos);
+			leased.add(prevPos);
 			leased.add(velocity);
 			leased.add(foam);
 		}
@@ -1517,6 +1559,7 @@ public final class FluidSimulation implements AutoCloseable {
 	public void release(Snapshot snapshot) {
 		synchronized (leased) {
 			leased.remove(snapshot.positions());
+			leased.remove(snapshot.previousPositions());
 			leased.remove(snapshot.velocities());
 			leased.remove(snapshot.diffuse());
 		}
@@ -1530,10 +1573,13 @@ public final class FluidSimulation implements AutoCloseable {
 	 * @param version       changes whenever the data changes
 	 * @param timeScale     simulated seconds per real second (1 while the GPU keeps up)
 	 * @param frozenBoxes   the frozen water ({@link FrozenColumns#boxes}), never changed afterwards
+	 * @param previousPositions the positions of the same particles one step before {@code positions}
+	 * @param previousReadBackNanos {@link System#nanoTime()} those refer to; equal to
+	 *                      {@code readBackNanos} when there is nothing to move between (still water)
 	 */
 	public record Snapshot(float[] positions, float[] velocities, int count, float[] diffuse, int diffuseCount,
 		int originX, int originY, int originZ, long tick, long readBackNanos, long version, float timeScale,
-		float[] frozenBoxes, int frozenBoxCount) {
+		float[] frozenBoxes, int frozenBoxCount, float[] previousPositions, long previousReadBackNanos) {
 	}
 
 	/**
@@ -1644,6 +1690,9 @@ public final class FluidSimulation implements AutoCloseable {
 			currPos[i * STRIDE] = px;
 			currPos[i * STRIDE + 1] = py;
 			currPos[i * STRIDE + 2] = pz;
+			prevPos[i * STRIDE] = px;
+			prevPos[i * STRIDE + 1] = py;
+			prevPos[i * STRIDE + 2] = pz;
 			velocity[i * STRIDE] = 0f;
 			velocity[i * STRIDE + 1] = 0f;
 			velocity[i * STRIDE + 2] = 0f;
@@ -1819,6 +1868,7 @@ public final class FluidSimulation implements AutoCloseable {
 		if (from == to) {
 			return;
 		}
+		System.arraycopy(prevPos, from * STRIDE, prevPos, to * STRIDE, STRIDE);
 		System.arraycopy(currPos, from * STRIDE, currPos, to * STRIDE, STRIDE);
 		System.arraycopy(velocity, from * STRIDE, velocity, to * STRIDE, STRIDE);
 		for (int c = 0; c < 4; c++) {
@@ -1969,6 +2019,8 @@ public final class FluidSimulation implements AutoCloseable {
 	public long frozenParticles() {
 		return frozen != null ? frozen.frozenParticles() : 0L;
 	}
+
+	private static final float[] NO_BOXES = new float[0];
 
 	/** Columns of frozen water. */
 	public int frozenColumns() {

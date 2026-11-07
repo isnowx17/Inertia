@@ -301,12 +301,15 @@ void main() {
         float onSurface = 1.0 - smoothstep(6.0, 12.0, abs(surfaceInfo.y - foamHeight));
         float facingUp = smoothstep(0.1, 0.45, normalize(surfaceNormal).y);
         float amount = insideMap ? foamAmount * onSurface * facingUp : 0.0;
-        // Up close the foam breaks up into bubbles.
-        float detail = smoothstep(0.03, 0.008, footprint);
-        if (detail > 0.0) {
+        // Up close the foam breaks up into bubbles. Each size of bubble only where it spans a few
+        // pixels: smaller than that it would only show as flickering grain.
+        float coarse = smoothstep(0.25, 0.1, footprint * 55.0);
+        float fine = smoothstep(0.25, 0.1, footprint * 110.0);
+        if (coarse > 0.0) {
             vec2 foamDetailPosition = mod(worldPosition.xz, 256.0);
-            float bubbles = foamNoise(foamDetailPosition * 55.0) * 0.55 + foamNoise(foamDetailPosition * 110.0) * 0.45;
-            amount *= 1.0 + (bubbles - 0.5) * 0.8 * detail;
+            float bubbles = (foamNoise(foamDetailPosition * 55.0) - 0.5) * 0.55 * coarse
+                + (foamNoise(foamDetailPosition * 110.0) - 0.5) * 0.45 * fine;
+            amount *= 1.0 + bubbles * 0.8;
         }
         foamOpacity = pow(clamp(amount * 1.15, 0.0, 1.0), 1.6) * 0.97;
         vec3 foamColor = vec3(0.92, 0.95, 0.98) * diffuseLight * lightMapColor.rgb;

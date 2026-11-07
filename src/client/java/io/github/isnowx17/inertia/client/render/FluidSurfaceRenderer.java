@@ -71,6 +71,15 @@ public final class FluidSurfaceRenderer {
 	private static final int DROPLET_ALPHA = 170;
 	/** Isolated particles slower than this (blocks/second) are not drawn as drops. */
 	private static final float MIN_DROPLET_SPEED = 1.0f;
+	/** Surfaces are built at most this often while the water moves between two steps (50 a second). */
+	private static final long MESH_INTERVAL_NANOS = 20_000_000L;
+	/** A surface between two steps comes at most once per this many times the last one took to build. */
+	private static final long MESH_COST_FACTOR = 3L;
+	/** Time between two steps that is assumed for moving the water between them (a tick, give or take). */
+	private static final long MIN_STEP_NANOS = 30_000_000L;
+	private static final long MAX_STEP_NANOS = 150_000_000L;
+	/** How far past the newest step the water may be moved when the next step is late (its share of a step). */
+	private static final float MAX_ALPHA = 1.25f;
 	/** Never move geometry further ahead than this, in simulated seconds (e.g. after a hitch). */
 	private static final float MAX_EXTRAPOLATION = 0.25f;
 	/** Spray particles drawn at most per frame; beyond this every n-th particle is drawn. */
@@ -88,6 +97,8 @@ public final class FluidSurfaceRenderer {
 	private static final int FLOW_SMOOTHING_PASSES = 3;
 	/** Most a vertex's flow may differ from its neighbours' (blocks/second), see {@link #smoothFlow}. */
 	private static final float MAX_FLOW_DEVIATION = 1.5f;
+	/** Gravity on spray between two steps (blocks/second²), as in the physics and water_particle.vsh. */
+	private static final float SPRAY_GRAVITY = -9.81f;
 	/** Floats per collected spray particle: position, flow velocity, lifetime. */
 	private static final int SPRAY_STRIDE = 7;
 	/** Spray is drawn where the field density is at least this fraction of the threshold (close to water). */
@@ -135,6 +146,21 @@ public final class FluidSurfaceRenderer {
 	private volatile Result latest;
 
 	private FluidSurfaceMesher mesher;
+	/** The GPU builds the surface (see GpuSurface): the CPU only builds one per step, for foam, drops and light. */
+	private volatile boolean gpuSurfaceActive;
+	/** A GPU-built surface to draw this frame, and the light table it was given (by result serial). */
+	private io.github.isnowx17.inertia.client.gpu.GpuSurface.Built pendingGpu;
+	private long[] gpuLightKeys = new long[0];
+	private int[] gpuLightValues = new int[0];
+	private long gpuLightSerial = Long.MIN_VALUE;
+	/** Interpolated particles for the meshing job (see {@link #interpolate}); meshing job only. */
+	private float[] interpolatedPositions = new float[0];
+	private float[] interpolatedVelocities = new float[0];
+	/** When the newest job started, and whether the water was still on its way between two steps. */
+	private long meshedNanos;
+	private boolean meshedMoving;
+	/** How long the latest surface took to build (CPU time on the pool, roughly). */
+	private volatile long lastJobNanos;
 	private float mesherCell;
 	private float mesherSpacing;
 	private float mesherRadius;
@@ -156,6 +182,7 @@ public final class FluidSurfaceRenderer {
 	private final float[] velocityScratch = new float[3];
 	/** Extrapolation of the last frame, in simulated seconds; kept while the game is paused. */
 	private float lastDt;
+	private float lastSprayDt;
 	// Scratch arrays of the simple rendering, reused between frames.
 	private float[] simplePositions = new float[0];
 	private int[] simpleColors = new int[0];
@@ -177,6 +204,9 @@ public final class FluidSurfaceRenderer {
 		int originZ;
 		/** {@link System#nanoTime()} the positions refer to. */
 		long dataNanos;
+		/** Real time at which the spray's data is shown, and its speed (simulated seconds per real second). */
+		long sprayNanos;
+		float sprayScale = 1f;
 		/** Simulated seconds per real second when the data was taken. */
 		float timeScale = 1f;
 		/** Identifies this surface; the GPU copy is replaced when it changes. */
@@ -230,7 +260,7 @@ public final class FluidSurfaceRenderer {
 		}
 
 		CameraRenderState camera = context.levelState().cameraRenderState;
-		startMeshing(sim, camera.pos);
+		startMeshing(sim, camera.pos, client.isPaused());
 
 		Result result = latest;
 		if (result == null || result.simulation != sim) {
@@ -247,6 +277,11 @@ public final class FluidSurfaceRenderer {
 		}
 		float dt = Mth.clamp((now - result.dataNanos) / 1.0e9f * scale, 0f, MAX_EXTRAPOLATION);
 		lastDt = dt;
+		if (client.isPaused() || sim.sleeping()) {
+			result.sprayNanos = now - (long) (lastSprayDt * 1.0e9 / result.sprayScale);
+		}
+		float sprayDt = Mth.clamp((now - result.sprayNanos) / 1.0e9f * result.sprayScale, -MAX_EXTRAPOLATION, MAX_EXTRAPOLATION);
+		lastSprayDt = sprayDt;
 
 		if (!visible(camera.cullFrustum, result)) {
 			return; // nothing of the water can be on screen
@@ -271,6 +306,8 @@ public final class FluidSurfaceRenderer {
 				pendingFoamMap = config.foam && !result.foamMap.empty ? result.foamMap : null;
 				pendingWaterColor = waterColor;
 				pendingDt = dt;
+				pendingGpu = config.gpuSurface && !client.isPaused() ? buildOnGpu(result, now) : null;
+				gpuSurfaceActive = pendingGpu != null;
 			} else {
 				submitSimpleSurface(context, result, cam, dt, waterColor, config.renderOpacity);
 			}
@@ -284,7 +321,7 @@ public final class FluidSurfaceRenderer {
 				float spraySize = result.spacing * config.renderScale * 0.45f;
 				pendingParticles = new WaterPass.Particles(
 					result.particleBytes, result.dropletCount, result.sprayOffset, result.sprayCount, result.serial,
-					dropletParameters(camera.orientation, radius, waterColor, dt), sprayParameters(spraySize * SPRAY_SCALE, dt));
+					dropletParameters(camera.orientation, radius, waterColor, dt), sprayParameters(spraySize * SPRAY_SCALE, sprayDt));
 				pendingParticleOrigin = result;
 			}
 			pendingCamera = cam;
@@ -295,7 +332,7 @@ public final class FluidSurfaceRenderer {
 			}
 			if (result.sprayCount > 0) {
 				float size = result.spacing * config.renderScale * 0.45f;
-				submitQuads(context, foamType, prepareSpray(level, result, cam, dt, size));
+				submitQuads(context, foamType, prepareSpray(level, result, cam, sprayDt, size));
 			}
 		}
 	}
@@ -339,13 +376,21 @@ public final class FluidSurfaceRenderer {
 	// ------------------------------------------------------------------------------------------
 
 	/** Starts a surface job for new simulation data, unless one is still running. */
-	private void startMeshing(FluidSimulation sim, Vec3 cameraPosition) {
-		if (sim == meshedSimulation && sim.version() == meshedVersion) {
+	private void startMeshing(FluidSimulation sim, Vec3 cameraPosition, boolean paused) {
+		long now = System.nanoTime();
+		boolean newData = sim != meshedSimulation || sim.version() != meshedVersion;
+		// Between two steps the water keeps moving from the previous step's particles to the latest
+		// ones: a new surface every MESH_INTERVAL_NANOS while it does, but only as often as the CPU
+		// can spare (the surfaces between steps only make it smoother; the shaders move it on anyway).
+		long wait = Math.max(MESH_INTERVAL_NANOS, MESH_COST_FACTOR * lastJobNanos);
+		boolean moving = !paused && meshedMoving && !gpuSurfaceActive && now - meshedNanos >= wait;
+		if (!newData && !moving) {
 			return;
 		}
 		if (!busy.compareAndSet(false, true)) {
 			return;
 		}
+		meshedNanos = now;
 
 		InertiaConfig config = manager.config();
 		float spacing = sim.params().spacing();
@@ -377,8 +422,22 @@ public final class FluidSurfaceRenderer {
 		target.originX = snapshot.originX();
 		target.originY = snapshot.originY();
 		target.originZ = snapshot.originZ();
-		target.dataNanos = snapshot.readBackNanos() != 0L ? snapshot.readBackNanos() : System.nanoTime();
-		target.timeScale = snapshot.timeScale();
+		// Where the water is now: one step behind the newest data, moved on from the step before it
+		// (the newest arrives just as the water gets there), so it never has to jump back.
+		long curr = snapshot.readBackNanos() != 0L ? snapshot.readBackNanos() : now;
+		long prev = snapshot.previousReadBackNanos();
+		long interval = curr - prev;
+		boolean interpolate = prev != 0L && interval > 0L;
+		long span = interpolate ? Mth.clamp(interval, MIN_STEP_NANOS, MAX_STEP_NANOS) : 1L;
+		float alpha = interpolate ? Mth.clamp((float) (now - curr) / span, 0f, MAX_ALPHA) : 1f;
+		meshedMoving = interpolate && alpha < MAX_ALPHA;
+		float spanSeconds = span / 1.0e9f;
+		// The surface and the drops move at the interpolated speed in real seconds; the spray keeps its
+		// own data, which is shown one step later than it was taken, like the rest.
+		target.dataNanos = now;
+		target.timeScale = interpolate ? 1f : snapshot.timeScale();
+		target.sprayNanos = interpolate ? curr + span : curr;
+		target.sprayScale = snapshot.timeScale();
 		target.serial = ++serials;
 		target.lightsReady = false;
 		target.particleLightsReady = false;
@@ -388,22 +447,35 @@ public final class FluidSurfaceRenderer {
 		float camY = (float) (cameraPosition.y - snapshot.originY());
 		float camZ = (float) (cameraPosition.z - snapshot.originZ());
 
+		boolean stepFoam = foamDt > 0f || resetFoam;
 		try {
 			worker.execute(() -> {
+				long jobStart = System.nanoTime();
 				try {
-					job.mesh(snapshot.positions(), snapshot.velocities(), snapshot.count(), FluidSimulation.STRIDE,
+					float[] positions = snapshot.positions();
+					float[] velocities = snapshot.velocities();
+					if (interpolate) {
+						interpolate(snapshot, alpha, spanSeconds);
+						positions = interpolatedPositions;
+						velocities = interpolatedVelocities;
+					}
+					job.mesh(positions, velocities, snapshot.count(), FluidSimulation.STRIDE,
 						snapshot.frozenBoxes(), snapshot.frozenBoxCount(), target.mesh);
 					smoothFlow(target.mesh);
-					collectDroplets(job, snapshot, target, dropletsOn);
-					collectSpray(job, snapshot.diffuse(), diffuseCount, target);
+					collectDroplets(job, positions, velocities, snapshot.count(), target, dropletsOn);
+					collectSpray(job, snapshot.diffuse(), diffuseCount, snapshot.tick(), target);
 					if (foamJob != null) {
 						if (resetFoam) {
 							foamJob.clear();
 						}
 						FluidSurfaceMesher.Mesh mesh = target.mesh;
 						foamJob.setSurfaceFromMesh(mesh.vertices, mesh.vertexCount, FluidSurfaceMesher.VERTEX_STRIDE, foamCell);
-						foamJob.step(foamDt, snapshot.diffuse(), diffuseCount, foamLifetime);
-						foamJob.buildMap(target.foamMap);
+						if (stepFoam) {
+							// The foam takes up the spray and moves on once per step; in between it only
+							// follows the surface.
+							foamJob.step(foamDt, snapshot.diffuse(), diffuseCount, foamLifetime);
+						}
+						foamJob.buildMap(target.foamMap, camX, camZ);
 						fillDirect(target.foamMap);
 					} else {
 						target.foamMap.empty = true;
@@ -414,6 +486,7 @@ public final class FluidSurfaceRenderer {
 					packParticles(target);
 					target.cameraNearWater = nearWater(job, camX, camY, camZ);
 					latest = target;
+					lastJobNanos = System.nanoTime() - jobStart;
 				} catch (Throwable t) {
 					Inertia.LOGGER.error("Water surface meshing failed", t);
 				} finally {
@@ -425,6 +498,44 @@ public final class FluidSurfaceRenderer {
 			sim.release(snapshot);
 			busy.set(false);
 			throw e;
+		}
+	}
+
+	/**
+	 * Meshing job: the particles {@code alpha} of the way from their positions one step before to the
+	 * newest ones, and the velocity (blocks per real second) that takes them there in {@code span}
+	 * seconds, into {@link #interpolatedPositions} and {@link #interpolatedVelocities}.
+	 */
+	private void interpolate(FluidSimulation.Snapshot snapshot, float alpha, float span) {
+		int count = snapshot.count();
+		int stride = FluidSimulation.STRIDE;
+		int length = count * stride;
+		if (interpolatedPositions.length < length) {
+			interpolatedPositions = new float[length + length / 4];
+			interpolatedVelocities = new float[length + length / 4];
+		}
+		float[] prev = snapshot.previousPositions();
+		float[] curr = snapshot.positions();
+		float[] p = interpolatedPositions;
+		float[] v = interpolatedVelocities;
+		float inv = 1f / span;
+		int chunks = Math.max(1, Math.min(16, count / 32_768));
+		java.util.function.IntConsumer chunk = c -> {
+			int from = (int) ((long) count * c / chunks) * stride;
+			int to = (int) ((long) count * (c + 1) / chunks) * stride;
+			for (int o = from; o < to; o += stride) {
+				for (int k = 0; k < 3; k++) {
+					float a = prev[o + k];
+					float d = curr[o + k] - a;
+					p[o + k] = a + d * alpha;
+					v[o + k] = d * inv;
+				}
+			}
+		};
+		if (chunks == 1) {
+			chunk.accept(0);
+		} else {
+			meshPool.submit(() -> java.util.stream.IntStream.range(0, chunks).parallel().forEach(chunk)).join();
 		}
 	}
 
@@ -486,15 +597,14 @@ public final class FluidSurfaceRenderer {
 	 * a splash breaking up) are drawn as drops of water of their own size, so the water does not turn
 	 * into smaller specks where it leaves the surface. Those lying still are not drawn.
 	 */
-	private static void collectDroplets(FluidSurfaceMesher mesher, FluidSimulation.Snapshot snapshot, Result target, boolean enabled) {
+	private static void collectDroplets(FluidSurfaceMesher mesher, float[] positions, float[] velocities, int count, Result target,
+		boolean enabled) {
 		if (!enabled) {
 			target.dropletCount = 0;
 			return;
 		}
-		float[] positions = snapshot.positions();
-		float[] velocities = snapshot.velocities();
 		int stride = FluidSimulation.STRIDE;
-		int[] sparse = mesher.sparseParticles(positions, snapshot.count(), stride);
+		int[] sparse = mesher.sparseParticles(positions, count, stride);
 		if (target.droplets.length < sparse.length * DROPLET_STRIDE) {
 			target.droplets = new float[sparse.length * DROPLET_STRIDE];
 		}
@@ -582,17 +692,24 @@ public final class FluidSurfaceRenderer {
 	}
 
 	/** Keeps the diffuse particles just outside the water (spray), with the local flow velocity. */
-	private void collectSpray(FluidSurfaceMesher mesher, float[] diffuse, int count, Result target) {
+	private void collectSpray(FluidSurfaceMesher mesher, float[] diffuse, int count, long tick, Result target) {
+		measureSpray(diffuse, count, tick);
 		int stride = Math.max(1, (count + MAX_FOAM_DRAWN - 1) / MAX_FOAM_DRAWN);
-		int drawn = (count + stride - 1) / stride;
+		int drawn = (count + stride - 1) / stride + 1;
 		if (target.spray.length < drawn * SPRAY_STRIDE) {
 			target.spray = new float[drawn * SPRAY_STRIDE];
 		}
 		float[] v = velocityScratch;
 		float minDensity = mesher.threshold() * SPRAY_MIN_DENSITY;
 		float maxDensity = mesher.threshold() * SPRAY_MAX_DENSITY;
+		float[] measured = sprayVelocities;
+		int[] ids = sprayIds;
 		int n = 0;
-		for (int i = 0; i < count; i += stride) {
+		for (int i = 0; i < count && n < drawn; i++) {
+			// When not all can be drawn, the same ones every step (by who they are, not where in the list).
+			if (stride > 1 && Integer.remainderUnsigned(ids[i] * 0x9E3779B1, stride) != 0) {
+				continue;
+			}
 			float x = diffuse[i * 4];
 			float y = diffuse[i * 4 + 1];
 			float z = diffuse[i * 4 + 2];
@@ -605,18 +722,129 @@ public final class FluidSurfaceRenderer {
 			if (density < minDensity || density >= maxDensity) {
 				continue;
 			}
-			mesher.velocityAt(x, y, z, v);
 			int o = n * SPRAY_STRIDE;
 			target.spray[o] = x;
 			target.spray[o + 1] = y;
 			target.spray[o + 2] = z;
-			target.spray[o + 3] = v[0];
-			target.spray[o + 4] = v[1];
-			target.spray[o + 5] = v[2];
+			if (!Float.isNaN(measured[i * 3])) {
+				// The way it really went during the last step.
+				target.spray[o + 3] = measured[i * 3];
+				target.spray[o + 4] = measured[i * 3 + 1];
+				target.spray[o + 5] = measured[i * 3 + 2];
+			} else {
+				// New this step: the water's velocity where it is.
+				mesher.velocityAt(x, y, z, v);
+				target.spray[o + 3] = v[0];
+				target.spray[o + 4] = v[1];
+				target.spray[o + 5] = v[2];
+			}
 			target.spray[o + 6] = life;
 			n++;
 		}
 		target.sprayCount = n;
+	}
+
+	// Spray velocities, measured from one physics step to the next (worker thread). PhysX only gives
+	// the diffuse particles' positions and remaining lifetimes; the ones that die drop out of its list
+	// and the others keep their order, so each is found again by walking both lists together: the
+	// same particle has lived exactly one step longer and is close by. Where that does not hold, the
+	// particle takes the water's velocity as before.
+	private static final float SPRAY_MATCH_DISTANCE = 1.5f;
+	private static final float SPRAY_LIFE_TOLERANCE = 0.002f;
+	private float[] sprayVelocities = new float[0];
+	private int[] sprayIds = new int[0];
+	private long sprayTick = Long.MIN_VALUE;
+	private int sprayMeasuredCount;
+	private float[] lastSpray = new float[0];
+	private int[] lastSprayIds = new int[0];
+	private int lastSprayCount;
+	private int nextSprayId;
+
+	private void measureSpray(float[] diffuse, int count, long tick) {
+		if (tick == sprayTick && sprayMeasuredCount == count) {
+			return; // a surface between two steps: the same particles as the last time
+		}
+		if (sprayVelocities.length < count * 3) {
+			sprayVelocities = new float[count * 3 + count / 2 * 3];
+			sprayIds = new int[count + count / 2];
+		}
+		// How many physics steps of lifetime went by (not always one per tick when the game lags):
+		// the number the first particles agree on best.
+		int steps = 0;
+		if (lastSprayCount > 0 && tick > sprayTick) {
+			int bestMatches = 0;
+			for (int k = 1; k <= 4; k++) {
+				int matches = matchSpray(diffuse, Math.min(count, 256), k, false);
+				if (matches > bestMatches) {
+					bestMatches = matches;
+					steps = k;
+				}
+			}
+		}
+		matchSpray(diffuse, count, steps, true);
+		// This step is the one the next is measured against.
+		if (lastSpray.length < count * 4) {
+			lastSpray = new float[count * 4 + count / 2 * 4];
+			lastSprayIds = new int[count + count / 2];
+		}
+		System.arraycopy(diffuse, 0, lastSpray, 0, count * 4);
+		System.arraycopy(sprayIds, 0, lastSprayIds, 0, count);
+		lastSprayCount = count;
+		sprayTick = tick;
+		sprayMeasuredCount = count;
+	}
+
+	/**
+	 * Finds the first {@code count} particles in the last step's list, as if {@code steps} physics
+	 * steps went by (0: none are found); returns how many were found, and with {@code write} stores
+	 * their velocities and who they are.
+	 */
+	private int matchSpray(float[] diffuse, int count, int steps, boolean write) {
+		boolean match = steps > 0;
+		float dt = steps * TICK_SECONDS;
+		float maxDistance = SPRAY_MATCH_DISTANCE * SPRAY_MATCH_DISTANCE * steps * steps;
+		int matches = 0;
+		int j = 0;
+		for (int i = 0; i < count; i++) {
+			float x = diffuse[i * 4];
+			float y = diffuse[i * 4 + 1];
+			float z = diffuse[i * 4 + 2];
+			float life = diffuse[i * 4 + 3];
+			int found = -1;
+			if (match) {
+				// The next survivor of the last step's list: skip those that died (or do not fit).
+				for (int k = j; k < lastSprayCount && k < j + 64; k++) {
+					if (Math.abs(lastSpray[k * 4 + 3] - dt - life) > SPRAY_LIFE_TOLERANCE) {
+						continue;
+					}
+					float ex = x - lastSpray[k * 4];
+					float ey = y - lastSpray[k * 4 + 1];
+					float ez = z - lastSpray[k * 4 + 2];
+					if (ex * ex + ey * ey + ez * ez <= maxDistance) {
+						found = k;
+					}
+					break;
+				}
+			}
+			if (found >= 0) {
+				matches++;
+				j = found + 1;
+			}
+			if (!write) {
+				continue;
+			}
+			if (found >= 0) {
+				// Through both positions in dt, falling on the way like the shader moves it.
+				sprayVelocities[i * 3] = (x - lastSpray[found * 4]) / dt;
+				sprayVelocities[i * 3 + 1] = (y - lastSpray[found * 4 + 1]) / dt + 0.5f * SPRAY_GRAVITY * dt;
+				sprayVelocities[i * 3 + 2] = (z - lastSpray[found * 4 + 2]) / dt;
+				sprayIds[i] = lastSprayIds[found];
+			} else {
+				sprayVelocities[i * 3] = Float.NaN;
+				sprayIds[i] = nextSprayId++;
+			}
+		}
+		return matches;
 	}
 
 	/** Worker: copies the foam map into its direct buffer, so the render thread uploads it as it is. */
@@ -994,9 +1222,50 @@ public final class FluidSurfaceRenderer {
 	private float pendingDt;
 	private Vec3 pendingCamera;
 
+	/** Builds the surface on the GPU for this frame (see GpuSurface); null when it cannot. */
+	private io.github.isnowx17.inertia.client.gpu.GpuSurface.Built buildOnGpu(Result result, long now) {
+		if (io.github.isnowx17.inertia.client.gpu.GpuSurface.get() == null || mesher == null) {
+			return null;
+		}
+		FluidSurfaceMesher m = mesher;
+		if (result.lightsReady && result.serial != gpuLightSerial) {
+			int n = result.probeCount;
+			if (gpuLightKeys.length < n) {
+				gpuLightKeys = new long[n + n / 2];
+				gpuLightValues = new int[n + n / 2];
+			}
+			for (int k = 0; k < n; k++) {
+				long key = result.probes[k];
+				gpuLightKeys[k] = BlockPos.asLong(BlockPos.getX(key) - result.originX, BlockPos.getY(key) - result.originY,
+					BlockPos.getZ(key) - result.originZ);
+				gpuLightValues[k] = result.probeLights[k];
+			}
+			gpuLightSerial = result.serial;
+			gpuLightCount = n;
+		}
+		SurfaceFoam.Map map = result.foamMap;
+		boolean foam = manager.config().foam && !map.empty;
+		float cell = m.cellSize();
+		var settings = new io.github.isnowx17.inertia.client.gpu.GpuSurface.Settings(cell, m.restDensity(), m.threshold(), m.fullCount(),
+			m.restDensity() / (cell * cell * cell), m.blurKernel(), LIGHT_PROBE_OFFSET,
+			foam ? map.texelsPerBlock : 0f, foam ? map.originX : 0f, foam ? map.originZ : 0f, foam ? map.width : 1f,
+			foam ? map.height : 1f, foam ? map.baseHeight : 0f, foam && result.timeScale == 1f ? result.dataNanos : 0L,
+			foam ? new WaterPass.FoamKey(map, map.version) : null);
+		var built = io.github.isnowx17.inertia.client.gpu.GpuSurface.frame(now, settings,
+			gpuLightKeys, gpuLightValues, gpuLightCount, gpuLightSerial);
+		if (built == null || built.originX() != result.originX || built.originY() != result.originY || built.originZ() != result.originZ) {
+			return null;
+		}
+		return built;
+	}
+
+	private int gpuLightCount;
+
 	/** Called at {@code END_MAIN}: draws the surface with its foam, the spray and the droplets collected this frame. */
 	public void drawShaderSurface(LevelRenderContext context) {
 		Result surface = pendingSurface;
+		var built = pendingGpu;
+		pendingGpu = null;
 		SurfaceFoam.Map foamMap = pendingFoamMap;
 		WaterPass.Particles particles = pendingParticles;
 		Result particleOrigin = pendingParticleOrigin;
@@ -1024,7 +1293,12 @@ public final class FluidSurfaceRenderer {
 			Result origin = hasWater ? surface : particleOrigin;
 			Vector3f originOffset = new Vector3f(
 				(float) (origin.originX - cam.x), (float) (origin.originY - cam.y), (float) (origin.originZ - cam.z));
-			if (hasWater) {
+			if (hasWater && built != null) {
+				gpuSurface = WaterPass.Surface.built(built.vertices(), built.vertexCount(), built.indices(), built.indexCount(),
+					!surface.cameraNearWater);
+				// Built for its moment in real seconds: moved on only for the time since.
+				dt = Mth.clamp((System.nanoTime() - built.buildNanos()) / 1.0e9f, 0f, MAX_EXTRAPOLATION);
+			} else if (hasWater) {
 				gpuSurface = new WaterPass.Surface(surface.vertexBytes, surface.vertexCount, surface.indexBytes, surface.indexCount,
 					surface.serial, !surface.cameraNearWater);
 			}
@@ -1032,7 +1306,9 @@ public final class FluidSurfaceRenderer {
 			int deep = darken(pendingWaterColor, 0.35f);
 			org.joml.Vector3fc skyColor = sky.skyColor;
 			Matrix4f parameters = new Matrix4f()
-				.m00((System.nanoTime() / 1.0e9f) % 3600f)
+				// Wrapped in whole nanoseconds before going to float: the uptime as a float second
+				// count is only exact to a few hundredths, and the ripples would move in steps.
+				.m00((float) ((System.nanoTime() % 3_600_000_000_000L) / 1.0e9))
 				.m01(config.rippleStrength)
 				.m02(0.06f * config.refractionStrength)
 				.m03(config.waterAbsorption)
@@ -1049,7 +1325,11 @@ public final class FluidSurfaceRenderer {
 				.m32(config.sunStrength)
 				.m33(foamMap != null ? 1f : 0f);
 
-			waterPass.draw(gpuSurface, hasParticles ? particles : null, foamMap, sunDirection, daylight, originOffset, parameters);
+			// A surface built on the GPU has its foam coordinates for the foam map of its own moment,
+			// which can lie elsewhere than the newest one: it is drawn with that one.
+			Object surfaceFoam = built != null ? built.foam() : null;
+			waterPass.draw(gpuSurface, hasParticles ? particles : null, foamMap,
+				surfaceFoam instanceof WaterPass.FoamKey key ? key : null, sunDirection, daylight, originOffset, parameters);
 		} catch (Throwable t) {
 			Inertia.LOGGER.error("Water shader failed; switching to the simple water rendering", t);
 			waterPass.markFailed();
@@ -1167,7 +1447,7 @@ public final class FluidSurfaceRenderer {
 				continue;
 			}
 			float lx = f[o] + f[o + 3] * dt;
-			float ly = f[o + 1] + f[o + 4] * dt;
+			float ly = f[o + 1] + f[o + 4] * dt + 0.5f * SPRAY_GRAVITY * dt * dt;
 			float lz = f[o + 2] + f[o + 5] * dt;
 			float px = lx + offX;
 			float py = ly + offY;
