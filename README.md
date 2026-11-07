@@ -2,6 +2,21 @@
 
 **Inertia is an advanced, professional physics engine for Minecraft: Java Edition.**
 
+![Sunset over a pond filled by Inertia's water, the sun glinting on the ripples](docs/screenshots/sunset.jpg)
+
+<table>
+  <tr>
+    <td><img src="docs/screenshots/waterfall.jpg" alt="Two streams falling from a cliff into a pond"></td>
+    <td><img src="docs/screenshots/splash.jpg" alt="Water splashing and foaming where the falls hit the pond"></td>
+  </tr>
+  <tr>
+    <td><img src="docs/screenshots/pond.jpg" alt="The pond from above: foam, ripples and a floating boat"></td>
+    <td><img src="docs/screenshots/underwater.jpg" alt="Looking up at the moving surface from under the water"></td>
+  </tr>
+</table>
+
+<sub>In game on Windows (RTX 4090 Laptop GPU, 1920 × 1080, 512 particles per block): about 210 FPS while the falls run.</sub>
+
 Inertia adds real-time, GPU-simulated water powered by **NVIDIA PhysX 5**. Pour it
 from a bucket and watch it splash, flow down stairs, pool in holes and push you around.
 

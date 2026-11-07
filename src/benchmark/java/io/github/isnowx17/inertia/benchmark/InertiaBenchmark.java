@@ -94,6 +94,15 @@ public final class InertiaBenchmark implements ClientModInitializer {
 		new BlockPos[] {new BlockPos(9, -42, 9), new BlockPos(5, -42, 1)},
 		FILL.phases(), FILL.stopSources(), FILL.moveToSurface(), FILL.moveInside(), FILL.finish());
 
+	/**
+	 * Pictures for the README: a cliff with two streams falling into a round pond, trees and a
+	 * meadow, photographed from a few places without the HUD ({@code showcase-*.png}).
+	 */
+	private static final Scene SHOWCASE = new Scene(
+		new BlockPos[] {new BlockPos(-2, -50, -9), new BlockPos(3, -50, -9), new BlockPos(-5, -61, 1), new BlockPos(5, -61, 1),
+			new BlockPos(0, -61, 4), new BlockPos(0, -61, -3)},
+		new Object[0][], 100000, 100000, 100000, 100000);
+
 	private enum Stage { WAIT_TITLE, CREATING, IN_WORLD, DONE }
 
 	private String label;
@@ -129,7 +138,7 @@ public final class InertiaBenchmark implements ClientModInitializer {
 		}
 		String sceneName = System.getProperty("inertia.benchmark.scene", "heavy");
 		scene = "light".equals(sceneName) ? LIGHT : "fill".equals(sceneName) ? FILL : "fill1".equals(sceneName) ? FILL_ONE
-			: "room".equals(sceneName) ? ROOM : HEAVY;
+			: "room".equals(sceneName) ? ROOM : "showcase".equals(sceneName) ? SHOWCASE : HEAVY;
 		LOGGER.info("Inertia benchmark '{}' armed ({} scene)", label, sceneName());
 		ScreenEvents.AFTER_INIT.register((client, screen, width, height) -> {
 			if (stage == Stage.WAIT_TITLE && !(screen instanceof CreateWorldScreen) && client.level == null
@@ -160,7 +169,7 @@ public final class InertiaBenchmark implements ClientModInitializer {
 	}
 
 	private String sceneName() {
-		return scene == LIGHT ? "light" : scene == FILL ? "fill" : scene == FILL_ONE ? "fill1" : scene == ROOM ? "room" : "heavy";
+		return scene == LIGHT ? "light" : scene == FILL ? "fill" : scene == FILL_ONE ? "fill1" : scene == ROOM ? "room" : scene == SHOWCASE ? "showcase" : "heavy";
 	}
 
 	private void createWorld(Minecraft client) {
@@ -279,6 +288,10 @@ public final class InertiaBenchmark implements ClientModInitializer {
 			}
 			stage = Stage.DONE;
 			client.stop();
+			return;
+		}
+		if (scene == SHOWCASE) {
+			showcase(client);
 			return;
 		}
 		if (worldTicks == 20) {
@@ -424,6 +437,155 @@ public final class InertiaBenchmark implements ClientModInitializer {
 		if (event(12, t, scene.finish())) {
 			stage = Stage.DONE;
 			writeResults(client);
+			client.stop();
+		}
+	}
+
+	// ------------------------------------------------------------------------------------------
+	// Showcase
+	// ------------------------------------------------------------------------------------------
+
+	/** Pond centre and half widths. */
+	private static final int POND_RX = 9;
+	private int sourcesRemoved;
+	private static final int POND_RZ = 7;
+
+	private void buildShowcase(Minecraft client) {
+		command(client, "time set 5000");
+		command(client, "weather clear");
+		command(client, "difficulty peaceful");
+		command(client, "gamerule advance_time false");
+		// A meadow of grass and flowers.
+		java.util.Random random = new java.util.Random(7);
+		command(client, "fill -28 -60 -28 28 -60 28 minecraft:short_grass replace minecraft:air");
+		String[] flowers = {"poppy", "dandelion", "oxeye_daisy", "cornflower", "azure_bluet", "allium", "red_tulip"};
+		for (int i = 0; i < 160; i++) {
+			int x = random.nextInt(57) - 28;
+			int z = random.nextInt(57) - 28;
+			command(client, "setblock " + x + " -60 " + z + " minecraft:" + flowers[random.nextInt(flowers.length)]);
+		}
+		// A low bank around the pond.
+		for (int z = -POND_RZ - 2; z <= POND_RZ + 2; z++) {
+			int w = halfWidth(POND_RX + 2, POND_RZ + 2, z);
+			if (w >= 0) {
+				command(client, "fill " + -w + " -60 " + z + " " + w + " -60 " + z + " minecraft:grass_block");
+			}
+		}
+		// The pond: sand, some gravel and clay, three blocks deep.
+		for (int z = -POND_RZ; z <= POND_RZ; z++) {
+			int w = halfWidth(POND_RX, POND_RZ, z);
+			command(client, "fill " + -w + " -63 " + z + " " + w + " -63 " + z + " minecraft:sand");
+			command(client, "fill " + -w + " -62 " + z + " " + w + " -59 " + z + " minecraft:air");
+		}
+		command(client, "setblock 2 -62 -4 minecraft:mossy_cobblestone");
+		// The cliff, in bands of stone, with two stream beds cut into its top.
+		command(client, "fill -12 -60 -22 12 -51 -8 minecraft:stone");
+		command(client, "fill -12 -56 -22 12 -55 -8 minecraft:andesite");
+		command(client, "fill -12 -53 -22 12 -53 -8 minecraft:tuff");
+		command(client, "fill -12 -50 -22 12 -50 -8 minecraft:grass_block");
+		command(client, "fill -12 -49 -22 12 -49 -8 minecraft:short_grass replace minecraft:air");
+		command(client, "fill -12 -60 -8 -10 -54 -8 minecraft:air");
+		command(client, "fill 10 -60 -8 12 -52 -8 minecraft:air");
+		command(client, "fill -3 -50 -18 -1 -49 -8 minecraft:air");
+		command(client, "fill 2 -50 -18 4 -49 -8 minecraft:air");
+		command(client, "fill -3 -51 -18 -1 -51 -8 minecraft:mossy_cobblestone");
+		command(client, "fill 2 -51 -18 4 -51 -8 minecraft:mossy_cobblestone");
+		// Trees around.
+		String[][] trees = {{"fancy_oak", "-15 -60 7"}, {"birch", "14 -60 -2"}, {"oak", "-10 -60 14"}, {"birch", "-17 -60 -5"},
+			{"oak", "-8 -49 -16"}, {"fancy_oak", "7 -49 -17"}, {"birch", "4 -49 -12"}, {"oak", "21 -60 -12"},
+			{"spruce", "-21 -60 17"}, {"fancy_oak", "25 -60 14"}};
+		for (String[] tree : trees) {
+			command(client, "place feature minecraft:" + tree[0] + " " + tree[1]);
+		}
+		command(client, "kill @e[type=item]");
+	}
+
+	private static int halfWidth(int rx, int rz, int z) {
+		double f = 1.0 - (double) z * z / ((rz + 0.6) * (rz + 0.6));
+		return f < 0 ? -1 : (int) Math.round(rx * Math.sqrt(f));
+	}
+
+	/** Moves the camera to (x, y, z) (eye height) looking at the target. */
+	private void look(Minecraft client, double x, double y, double z, double tx, double ty, double tz) {
+		double dx = tx - x;
+		double dy = ty - y;
+		double dz = tz - z;
+		float yaw = (float) Math.toDegrees(Math.atan2(-dx, dz));
+		float pitch = (float) -Math.toDegrees(Math.atan2(dy, Math.sqrt(dx * dx + dz * dz)));
+		moveTo(client, x, y - 1.62, z, yaw, pitch);
+	}
+
+	private void shot(Minecraft client, String name) {
+		Screenshot.grab(client.gameDirectory, "showcase-" + name + ".png", client.gameRenderer.mainRenderTarget(), 1, m -> { });
+		LOGGER.info("SHOWCASE shot {}", name);
+	}
+
+	private void showcase(Minecraft client) {
+		if (worldTicks == 20) {
+			applyOptions(client);
+			client.options.renderDistance().set(12);
+			if (!client.gui.hud.isHidden()) {
+				client.gui.hud.toggle();
+			}
+			InertiaClient.fluids().config().sourceFlow = Float.parseFloat(System.getProperty("inertia.showcase.flow", "15"));
+			buildShowcase(client);
+			look(client, 13.5, -53, 14.5, 0, -58.5, -3);
+		}
+		if (worldTicks % 100 == 0 && InertiaClient.fluids().simulation() != null) {
+			FluidSimulation s = InertiaClient.fluids().simulation();
+			LOGGER.info("WATER t={} active={} frozen={} fps={}", worldTicks, s.activeCount(), s.frozenParticles(), client.getFps());
+		}
+		FluidManager fluids = InertiaClient.fluids();
+		BlockPos[] sources = scene.sources();
+		if (sourcesPlaced < sources.length && worldTicks >= 200 + 20 * sourcesPlaced
+			&& fluids.toggleSource(client.player, sources[sourcesPlaced], false)) {
+			sourcesPlaced++;
+			if (sourcesPlaced == sources.length) {
+				startTick = worldTicks;
+			}
+		}
+		if (startTick < 0) {
+			return;
+		}
+		long t = worldTicks - startTick;
+		int at = Integer.getInteger("inertia.showcase.at", 700);
+		// The sources in the pond only fill it: off before the pictures (one per toggle cooldown).
+		int fillEnd = Integer.getInteger("inertia.showcase.fill", 500);
+		if (t >= fillEnd && sourcesRemoved < sources.length - 2
+			&& fluids.toggleSource(client.player, sources[2 + sourcesRemoved], false)) {
+			sourcesRemoved++;
+			LOGGER.info("SHOWCASE pond source {} off at t={}", sourcesRemoved, t);
+		}
+		if (event(0, t, 300)) {
+			command(client, "summon minecraft:oak_boat 4.5 -58 3.5 {Rotation:[60f,0f]}");
+		}
+		if (event(1, t, at)) {
+			look(client, 13.5, -53, 14.5, 0, -58.5, -3);
+		}
+		if (event(2, t, at + 40)) {
+			shot(client, "wide");
+			look(client, 5.5, -57.5, 3.5, -1, -58, -7);
+		}
+		if (event(3, t, at + 80)) {
+			shot(client, "falls");
+			look(client, 1.5, -49, 9.5, 0, -61, -1);
+		}
+		if (event(4, t, at + 120)) {
+			shot(client, "above");
+			command(client, "time set 12300");
+			look(client, 8, -59, 1.5, -8, -60.4, -0.5);
+		}
+		if (event(5, t, at + 160)) {
+			shot(client, "sunset");
+			command(client, "time set 5000");
+			command(client, "gamemode spectator @a");
+			look(client, -4.5, -61.6, 3.5, 0.5, -60.4, -6);
+		}
+		if (event(6, t, at + 200)) {
+			shot(client, "underwater");
+		}
+		if (event(7, t, at + 220)) {
+			stage = Stage.DONE;
 			client.stop();
 		}
 	}
