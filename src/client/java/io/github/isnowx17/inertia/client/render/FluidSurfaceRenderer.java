@@ -431,7 +431,7 @@ public final class FluidSurfaceRenderer {
 	private static SurfaceFoam.Settings foamSettings(InertiaConfig config) {
 		int tracers;
 		int texelsPerBlock;
-		switch (config.quality) {
+		switch (config.effectiveFoamQuality()) {
 			case "low" -> {
 				tracers = 40_000;
 				texelsPerBlock = 16;

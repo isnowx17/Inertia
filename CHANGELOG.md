@@ -3,6 +3,13 @@
 All notable changes to Inertia are documented here. Versioning rules are described in
 [PLAN.md](PLAN.md#5-sürümleme).
 
+## [1.3.1]
+
+### Added
+- `foamQuality`: the foam's detail can be set apart from the quality level (`auto`, the default,
+  follows it as before; `low`, `medium`, `high`, `ultra`), for example ultra foam with a `custom`
+  quality.
+
 ## [1.3.0]
 
 Still water kept as a volume: a box, a pool or a room can be filled with far more water.
