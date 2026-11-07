@@ -46,6 +46,7 @@ bucket are unchanged. The water is not saved: it disappears when you leave the w
 |---|---|---|
 | `quality` | `ultra` | `low`, `medium`, `high`, `ultra` or `custom`; see below. Lower it for more FPS. |
 | `particleLimit` | 2097152 | Most water particles; the buffer grows up to this as you add water. |
+| `keepRealTime` | true | Keep the water flowing at full speed: when the GPU cannot simulate more water in real time, new water replaces calm water, so the amount stops growing. When off, the water can grow up to `particleLimit` but runs in slow motion once the GPU cannot keep up. |
 | `sourceFlow` | 3.0 | Water a flowing source lets out, in blocks of water per second (also its outflow speed). |
 | `despawnDistance` | 96 | Water further away from you than this is removed. |
 | `playerInteraction` | true | Whether water pushes, slows and lifts the player. |
@@ -102,6 +103,10 @@ The jars are written to `build/libs/`. Without `-Pplatform` the current operatin
 used. The CUDA build of physx-jni is downloaded from its GitHub release and its SHA-256 checksum
 is verified during the build.
 
+`./gradlew runBenchmark -PbenchLabel=<name> -PbenchScene=heavy` (or `light`) plays a fixed water scene
+and writes frame times to `run-benchmark/benchmark/<name>.json`. It lives in `src/benchmark` and is
+not part of the mod jar.
+
 To publish a release, set `mod_version` in `gradle.properties`, add a `## [<version>]` entry to
 `CHANGELOG.md` and push. If that version has not been released yet, GitHub Actions builds both
 jars, creates the tag `v<version>` and publishes the release.
@@ -114,9 +119,17 @@ jars, creates the tag `v<version>` and publishes the release.
   Full blocks are greedily merged into large boxes, partial blocks use their collision boxes.
 - **Player:** a kinematic box keeps the water out of the player; the force of the water on the
   player is computed from the particles around them.
-- **Physics thread:** after every GPU step the positions and velocities are copied back in one
-  bulk copy each, and the per-particle work of the tick (lost particles, the water around the
-  player, the blocks that need collision geometry) is done right there, off the game thread.
+- **Physics thread:** after every GPU step the positions and velocities are copied back and the
+  per-particle work of the tick (lost particles, the water around the player, the blocks that need
+  collision geometry) is done right there, off the game thread, in parallel chunks.
+- **Real time:** the game never waits for the GPU; a game tick that comes while a step is running is
+  simulated on the first frame after it finished. When a step gets close to a tick's length the
+  simulation switches to a cheaper solver (three instead of four sub-steps at `ultra`). When even that
+  is not enough, new water replaces calm water (`keepRealTime`): a source keeps pouring and a pool
+  stops rising, so the water does not fall into slow motion.
+- **Sleeping water:** water that has been still for a few seconds needs no physics steps: the GPU and
+  the worker pool stay free, and only drawing remains (ripples and caustics are drawn by the shader
+  and keep moving). New water, a block changing near the water or the player coming close wakes it up.
 - **Surface:** for every new simulation result a background job builds one continuous water
   surface from the particles, in parallel on all spare cores: every particle is spread over the
   eight surrounding grid nodes, the density is smoothed with a small separable blur, and surface
@@ -126,7 +139,10 @@ jars, creates the tag `v<version>` and publishes the release.
   surface point, 32-bit indices), and every frame the vertex shader moves the vertices along their
   flow velocity for the time since the data was taken, so the water flows smoothly between
   updates and the CPU does no per-frame work for it. Seen from outside the water, the faces turned
-  away from the camera are skipped. Isolated splashes are drawn as small droplets.
+  away from the camera are skipped; seen from inside, a depth pre-pass makes every pixel get shaded
+  once. Water outside the view is not drawn at all. Spray and isolated splashes (small droplets)
+  stay on the GPU too: one instance per particle, uploaded once per simulation step and turned into
+  camera-facing quads by a vertex shader.
 - **Water shader:** after the main level pass the scene colour and depth are copied, then the
   surface is drawn with Inertia's own shader in a separate render pass: refraction through
   ripple-distorted lookups, per-pixel absorption from the depth difference (clear shallows, blue
@@ -142,7 +158,7 @@ jars, creates the tag `v<version>` and publishes the release.
   texel at `ultra`, with mip levels) that the water shader samples; up close the foam breaks up into fine
   bubbles. Spray just above the water is drawn as small soft flecks.
 - **Threads:** the GPU step runs on a physics thread, the surface and the foam are built on a
-  worker pool, and the game thread only collects results and draws.
+  worker pool below normal priority, and the game thread only collects results and draws.
 
 See [PLAN.md](PLAN.md) for scope and versioning, and [CHANGELOG.md](CHANGELOG.md) for changes.
 

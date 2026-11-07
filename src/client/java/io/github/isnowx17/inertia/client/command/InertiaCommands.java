@@ -40,6 +40,13 @@ public final class InertiaCommands {
 						sim.collisionSections(),
 						String.format(Locale.ROOT, "%.2f", sim.lastStepMillis())
 					));
+					source.sendFeedback(Component.translatable(
+						"command.inertia.info.solver",
+						sim.currentSubsteps(),
+						sim.currentIterations(),
+						sim.atGpuLimit() ? "✔" : "✘",
+						sim.sleeping() ? "✔" : "✘"
+					));
 				}
 				return 1;
 			}))

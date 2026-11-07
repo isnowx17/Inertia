@@ -41,6 +41,10 @@ layout(location = 6) out vec2 foamUv;
 layout(location = 7) out float diffuseLight;
 layout(location = 8) out vec2 surfaceInfo;
 
+// From inside the water the surface is drawn twice: depth only, then shaded where its depth matches
+// (see WaterPass), so both pipelines must compute exactly the same positions.
+invariant gl_Position;
+
 void main() {
     // Move along the flow for the time since the data was taken.
     vec3 local = Position + Velocity * TextureMat[1].w;

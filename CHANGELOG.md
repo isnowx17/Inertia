@@ -3,6 +3,56 @@
 All notable changes to Inertia are documented here. Versioning rules are described in
 [PLAN.md](PLAN.md#5-sürümleme).
 
+## [1.2.0]
+
+A big performance update: the game never waits for the GPU, still water costs next to nothing, and
+the water keeps flowing in real time.
+
+Measured at `ultra`, 1920×1080, no frame limit, RTX 4090 Laptop under WSL2 (a world without water:
+about 150 FPS):
+
+| Scene | 1.1.2 | 1.2.0 |
+|---|---|---|
+| Waterfall, 180,000 particles | 69 FPS (1 % low 14) | 96 FPS (1 % low 26) |
+| Still pool, 245,000 particles | 96 FPS | 151 FPS |
+| Standing in a pool, 245,000 particles | 101 FPS | 112 FPS |
+| Two sources left running | 1 FPS, water at 50 % speed, 1 million particles | 80 FPS, water at 97 % speed, 400,000 particles |
+| Still pool after that | 0.7 FPS, 1.2 million particles | 160 FPS, 400,000 particles |
+
+### Performance
+- **The game never waits for the GPU.** A physics step that takes longer than a game tick used to
+  stop the game until it was done, and the game then ran several ticks per frame, each waiting for
+  the GPU (about 1 FPS). Now the game goes on, and the tick is simulated on the first frame after the
+  step finished. The longest game tick went from 20-250 ms to mostly under 10 ms.
+- **Still water sleeps.** Water that has been still for 3 seconds needs no physics steps and no new
+  surfaces, which frees the GPU and the CPU: a still pool costs almost nothing but its drawing. New
+  water, a change of the collision geometry around it and the player coming close wake it up.
+- **Water keeps flowing in real time.** When a step gets close to a tick's length, the simulation
+  uses fewer sub-steps (three instead of four at `ultra`). When that is not enough, new water replaces
+  calm water (see `keepRealTime` below).
+- **Spray and droplets stay on the GPU:** one instance per particle, uploaded once per simulation
+  step and turned into camera-facing quads by a vertex shader, instead of being rebuilt and
+  uploaded every frame. Inertia's own rendering code now takes 0.1-1.2 ms per frame on the render
+  thread; with a lot of water it took 11-24 ms.
+- Light is looked up once per block instead of per vertex; water outside the view is not drawn;
+  with the camera in the water a depth pre-pass makes every pixel get shaded once; the reflection
+  rays need no matrix product per step.
+- Physics thread: the copy of the particles and the work on them run in parallel chunks. Removing
+  particles uploads only the changed ones (it used to upload nearly all of them). Block changes
+  that leave the collision geometry as it is (grass spreading, crops growing) no longer rebuild it.
+- The surface worker threads run below normal priority.
+
+### Changed
+- New setting `keepRealTime` (default on): when the GPU cannot simulate more water in real time, new
+  water replaces calm water. A source keeps pouring and a pool stops rising, so the water does not
+  fall into slow motion. How much water that is depends on the GPU and on how much it has to draw.
+  When off, the water can grow up to `particleLimit` as before, and runs in slow motion once the GPU
+  cannot keep up (the game keeps its frame rate).
+- With the cheaper solver the water level of a pool is about 5 % lower.
+- Foam fades on sleeping water; surface details that only came from the particles' jitter stand still.
+- `/inertia info` shows the solver in use, whether the GPU's limit is reached and whether the water
+  sleeps.
+
 ## [1.1.2]
 
 ### Fixed

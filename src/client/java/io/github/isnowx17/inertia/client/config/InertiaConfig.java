@@ -53,6 +53,14 @@ public final class InertiaConfig {
 	public int particleLimit = 2_097_152;
 
 	/**
+	 * Keep the water flowing in real time: when the GPU cannot simulate more water at full speed (even
+	 * with a cheaper solver), new water replaces calm water, so the amount of water stops growing. When
+	 * off, the water can grow up to {@link #particleLimit} but runs in slow motion once the GPU cannot
+	 * keep up.
+	 */
+	public boolean keepRealTime = true;
+
+	/**
 	 * Water a flowing water source lets out, in blocks of water per second; it leaves the source
 	 * block at this many blocks per second, as one continuous stream.
 	 */

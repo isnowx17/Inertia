@@ -129,6 +129,8 @@ public final class SurfaceFoam {
 		/** Local y of height code 0. */
 		public float baseHeight;
 		public byte[] data = new byte[0];
+		/** A copy of {@link #data} in native memory, ready for the GPU upload (filled by the renderer's job), or {@code null}. */
+		public java.nio.ByteBuffer direct;
 		public final int[] offsets = new int[MAX_LEVELS];
 		public boolean empty = true;
 		/** Increases with every rebuild. */
