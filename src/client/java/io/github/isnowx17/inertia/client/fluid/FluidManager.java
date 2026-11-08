@@ -329,6 +329,24 @@ public final class FluidManager {
 		}
 	}
 
+	/** A block of water (or lava) at each of {@code centres}, at rest (a ball from a command): one sound for all. */
+	public int releaseBlocks(Player player, List<Vec3> centres) {
+		if (centres.isEmpty() || !ensureSimulation(player)) {
+			return 0;
+		}
+		// Added with the next physics step, like water poured while the GPU is busy.
+		for (Vec3 c : centres) {
+			pendingSpawns.add(c.x);
+			pendingSpawns.add(c.y);
+			pendingSpawns.add(c.z);
+			pendingSpawns.add(0.0);
+			pendingSpawns.add(0.0);
+			pendingSpawns.add(0.0);
+		}
+		pouredSound(player, centres.get(centres.size() / 2), true);
+		return centres.size();
+	}
+
 	/** Handler for {@link io.github.isnowx17.inertia.item.FluidBucketItem}. */
 	public boolean releaseWater(Player player, Vec3 center, Vec3 velocity) {
 		if (!ensureSimulation(player)) {
@@ -811,16 +829,17 @@ public final class FluidManager {
 	/** Submersion in lava from which the player burns. */
 	private static final double LAVA_BURNS_FROM = 0.05;
 
-	/** Removes all water. */
+	/** Removes all water (or lava) and the realistic bodies; returns the particles removed. */
 	public int clear() {
+		clearBodies();
+		return clearLiquid();
+	}
+
+	/** Removes all water (or lava): the water asleep far away and saved water not put back yet too. */
+	public int clearLiquid() {
 		sources.clear();
 		pendingSpawns.clear();
-		// All of it: the water asleep far away and saved water not put back yet too, and the bodies.
 		dormant.clear();
-		if (simulation != null) {
-			simulation.settle(BlockPos.ZERO);
-			simulation.rigids().clear();
-		}
 		pendingWater = null;
 		pendingBox = null;
 		if (simulation == null) {
@@ -828,6 +847,18 @@ public final class FluidManager {
 		}
 		int removed = simulation.activeCount();
 		simulation.clearParticles();
+		return removed;
+	}
+
+	/** Removes the realistic bodies, saved ones not put back yet too; returns how many. */
+	public int clearBodies() {
+		int removed = pendingBodies != null ? pendingBodies.size() : 0;
+		pendingBodies = null;
+		if (simulation != null) {
+			simulation.settle(BlockPos.ZERO);
+			removed += simulation.rigids().bodies().size();
+			simulation.rigids().clear();
+		}
 		return removed;
 	}
 

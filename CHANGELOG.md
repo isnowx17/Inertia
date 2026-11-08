@@ -3,6 +3,27 @@
 All notable changes to Inertia are documented here. Versioning rules are described in
 [PLAN.md](PLAN.md#5-sürümleme).
 
+## [3.1.0] — Commands Update
+
+### Added
+- **`/inertia ball [size]`** drops a ball of water `size` blocks across (1–16, default 3) in front of
+  you, and **`/inertia lava [size]`** one of lava.
+- **`/inertia slime [size]`** places a cube of slime blocks (1–4) in the open cells in front of you.
+- **`/inertia block <block> [size]`** places a realistic cube of any block (1–8 across) as one body,
+  and **`/inertia boat`** / **`/inertia minecart`** a realistic boat or minecart on the ground in
+  front of you, facing the way you look.
+- **`/inertia clear water|lava|slime|bodies`** removes one kind only; `/inertia clear` still removes
+  everything.
+
+### Fixed
+- **The game froze when a realistic block was placed with no water around** (after
+  `/inertia clear`, say): a PhysX step whose particle system has no particles never finishes on the
+  GPU, and the game waited for it. The empty particle system is now out of the scene until there is
+  water again.
+- **Walking into realistic bodies** applied the push while a physics step was running, which PhysX
+  ignored (with errors in the log): the pushes now wait for the next step.
+- The collision shapes of realistic bodies were never released.
+
 ## [3.0.1]
 
 ### Fixed

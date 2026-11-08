@@ -528,7 +528,13 @@ public final class InertiaBenchmark implements ClientModInitializer {
 				line.append(String.format(java.util.Locale.ROOT, " %s(%d)@%.2f,%.2f,%.2f", b.kind, b.parts().size(),
 					p[0] + sim.originX(), p[1] + sim.originY(), p[2] + sim.originZ()));
 			}
-			LOGGER.info("BODIES t={} water={}{}", t, sim.activeCount(), line);
+			for (var b : sim.rigids().bodies()) {
+				line.append(" v=").append(sim.stepRunning() ? "?" : sim.rigids().velocity(b).toString());
+			}
+			LOGGER.info("BODIES t={} water={} ticks={} sleeping={}{}", t, sim.activeCount(), sim.tickCount(), sim.sleeping(), line);
+		}
+		if (Boolean.getBoolean("inertia.bodies.commands")) {
+			commandsShow(client, t);
 		}
 		if (t == 60) {
 			shot(client, "bodies-fall");
@@ -536,9 +542,82 @@ public final class InertiaBenchmark implements ClientModInitializer {
 		if (t == 160) {
 			shot(client, "bodies-rest");
 		}
+		if (t == 100 && Boolean.getBoolean("inertia.bodies.clear")) {
+			// What /inertia clear does.
+			LOGGER.info("BODIES clear: {}", water.clear());
+		}
+		if (t == 110 && Boolean.getBoolean("inertia.bodies.clear")) {
+			// Then a realistic block placed into the empty scene, as the controller does.
+			var placed = water.simulationForBodies(client.player, new BlockPos(2, -60, 2));
+			Vec3 po = new Vec3(placed.originX(), placed.originY(), placed.originZ());
+			placed.rigids().addBlock(net.minecraft.world.level.block.Blocks.STONE.defaultBlockState(), new Vec3(2.5, -58.5, 2.5).subtract(po), Vec3.ZERO);
+			LOGGER.info("BODIES placed into the empty scene, origin {}", po);
+		}
+		if (t == 130 && Boolean.getBoolean("inertia.bodies.clear")) {
+			// And water again: the particle system comes back into the scene.
+			for (int k = 0; k < 6; k++) {
+				water.releaseWater(client.player, new Vec3(-1.5 + k, -57.5, 1.5), Vec3.ZERO);
+			}
+		}
 		if (t >= 170) {
 			stage = Stage.DONE;
 			client.stop();
+		}
+	}
+
+	/** The /inertia commands, run as the player would type them (from chosen spots), and a shot of them. */
+	private void commandsShow(Minecraft client, long t) {
+		if (t == 2) {
+			look(client, -5.5, -56.5, 13.5, 2.5, -58.5, 3.0);
+		}
+		if (t == 10) {
+			clientCommand(client, "inertia boat", 2.5, -61.0, 6.0, 180f, 0f);
+			clientCommand(client, "inertia block minecraft:gold_block 2", -3.0, -58.0, 4.0, 180f, 0f);
+			clientCommand(client, "inertia slime 2", 9.0, -60.0, 4.0, 180f, 0f);
+			clientCommand(client, "inertia lava 2", -7.0, -58.0, 1.0, 180f, 0f);
+		}
+		if (t == 40) {
+			clientCommand(client, "inertia ball 6", 2.5, -55.0, 9.0, 180f, 0f);
+		}
+		if (t == 49) {
+			shot(client, "commands");
+		}
+		if (t == 120) {
+			logCounts("before clear");
+			clientCommand(client, "inertia clear bodies", 0, -60, 12, 180f, 0f);
+			clientCommand(client, "inertia clear lava", 0, -60, 12, 180f, 0f);
+			clientCommand(client, "inertia clear slime", 0, -60, 12, 180f, 0f);
+		}
+		if (t == 125) {
+			logCounts("after clear");
+		}
+	}
+
+	private static void logCounts(String when) {
+		var water = InertiaClient.fluids().simulation();
+		var lava = InertiaClient.lava().simulation();
+		LOGGER.info("COMMANDS {}: water={} bodies={} lava={} slime={}", when, water != null ? water.activeCount() : 0,
+			water != null ? water.rigids().bodies().size() : 0, lava != null ? lava.activeCount() : 0, InertiaClient.slime().bodyCount());
+	}
+
+	/** Runs a client command as typed in the chat, with the player's eyes at a spot for the moment. */
+	private static void clientCommand(Minecraft client, String command, double x, double y, double z, float yaw, float pitch) {
+		var player = client.player;
+		double px = player.getX(), py = player.getY(), pz = player.getZ();
+		float pYaw = player.getYRot(), pPitch = player.getXRot();
+		player.setPos(x, y, z);
+		player.setYRot(yaw);
+		player.setXRot(pitch);
+		try {
+			int result = net.fabricmc.fabric.api.client.command.v2.ClientCommands.getActiveDispatcher().execute(command,
+				(net.fabricmc.fabric.api.client.command.v2.FabricClientCommandSource) client.getConnection().getSuggestionsProvider());
+			LOGGER.info("COMMAND /{} -> {}", command, result);
+		} catch (Exception e) {
+			LOGGER.error("COMMAND /{} failed", command, e);
+		} finally {
+			player.setPos(px, py, pz);
+			player.setYRot(pYaw);
+			player.setXRot(pPitch);
 		}
 	}
 

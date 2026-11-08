@@ -60,8 +60,12 @@ background).
   its **realistic** version: a PhysX body that falls, floats or sinks, sticks to other realistic
   blocks it is placed on, breaks when hit and can be carried with use. Realistic boats and minecarts
   can be ridden (sneak to get out); minecarts follow rails.
+- Commands put things in front of you: `/inertia ball [size]` (a ball of water, up to 16 blocks
+  across), `/inertia lava [size]`, `/inertia slime [size]`, `/inertia block <block> [size]` (a
+  realistic cube), `/inertia boat` and `/inertia minecart`.
 - `/inertia info` shows the GPU and simulation status, `/inertia clear` removes all water, lava,
-  slime blocks and realistic bodies and stops all sources.
+  slime blocks and realistic bodies and stops all sources; `/inertia clear water|lava|slime|bodies`
+  removes one kind.
 
 Water simulated by Inertia is separate from vanilla water: oceans, lakes and the normal water
 bucket are unchanged. The water is not saved: it disappears when you leave the world.

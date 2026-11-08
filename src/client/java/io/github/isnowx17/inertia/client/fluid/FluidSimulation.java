@@ -1306,6 +1306,8 @@ public final class FluidSimulation implements AutoCloseable {
 		io.github.isnowx17.inertia.client.gpu.GpuSurface.feed(kind.ordinal(), devicePositions, prevPos, activeCount,
 			previousLaunchNanos != 0L ? previousLaunchNanos + tickNanos : 0L, finishedLaunchNanos + tickNanos,
 			originX, originY, originZ, frozen != null ? frozen.boxes() : NO_BOXES);
+		rigids.applyShoves();
+		syncParticleSystem();
 		stepLaunchNanos = System.nanoTime();
 		pendingStep = stepper.submit(this::step);
 	}
@@ -1471,6 +1473,27 @@ public final class FluidSimulation implements AutoCloseable {
 
 	/** Thickness in blocks of the shell around the player's bounding box in which water is measured. */
 	public static final double PLAYER_SHELL = 0.35;
+
+	/** Whether the particle system is in the scene (see {@link #syncParticleSystem}). */
+	private boolean particlesInScene = true;
+
+	/**
+	 * Before a step: the particle system is in the scene only while there is water. A step of a scene
+	 * whose particle system has no particles never finishes on the GPU (fetchResults waits forever),
+	 * and realistic bodies are stepped without water.
+	 */
+	private void syncParticleSystem() {
+		boolean wanted = activeCount > 0;
+		if (wanted == particlesInScene) {
+			return;
+		}
+		if (wanted) {
+			scene.addActor(particleSystem);
+		} else {
+			scene.removeActor(particleSystem);
+		}
+		particlesInScene = wanted;
+	}
 
 	/** Physics thread: simulate the sub-steps and read the results back into the back buffers. */
 	private void step() {
@@ -2335,7 +2358,6 @@ public final class FluidSimulation implements AutoCloseable {
 		return params;
 	}
 
-	/** Number of game ticks simulated so far. */
 	/** While the player rides a realistic vehicle their box is out of the scene (it would push the vehicle). */
 	private boolean playerRiding;
 
@@ -2487,7 +2509,9 @@ public final class FluidSimulation implements AutoCloseable {
 		}
 		particleSystem.removeParticleBuffer(buffer);
 		buffer.release();
-		scene.removeActor(particleSystem);
+		if (particlesInScene) {
+			scene.removeActor(particleSystem);
+		}
 		particleSystem.release();
 		material.release();
 		scene.release();

@@ -104,7 +104,7 @@ public final class InertiaClient implements ClientModInitializer {
 				particleRenderer.collectSubmits(context);
 			}
 		});
-		ClientCommandRegistrationCallback.EVENT.register((dispatcher, buildContext) -> InertiaCommands.register(dispatcher, allFluids()));
+		ClientCommandRegistrationCallback.EVENT.register((dispatcher, buildContext) -> InertiaCommands.register(dispatcher, buildContext, allFluids()));
 
 		// Realistic blocks, boats and minecarts (PhysX rigid bodies in the water's scene).
 		realistic = new io.github.isnowx17.inertia.client.realistic.RealisticController(fluids);

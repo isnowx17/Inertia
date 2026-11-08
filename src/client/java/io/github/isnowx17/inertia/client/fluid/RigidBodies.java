@@ -145,7 +145,9 @@ public final class RigidBodies implements AutoCloseable {
 		}
 		body.parts.add(new Part(x, y, z, state));
 		try (MemoryStack mem = MemoryStack.stackPush()) {
-			body.actor.attachShape(blockShape(mem, x, y, z));
+			PxShape shape = blockShape(mem, x, y, z);
+			body.actor.attachShape(shape);
+			shape.release();
 			updateMass(body);
 			body.actor.wakeUp();
 		}
@@ -209,6 +211,7 @@ public final class RigidBodies implements AutoCloseable {
 	}
 
 	public void clear() {
+		shoves.clear();
 		for (Body b : bodies) {
 			scene.removeActor(b.actor);
 			b.actor.release();
@@ -225,11 +228,15 @@ public final class RigidBodies implements AutoCloseable {
 			PxRigidDynamic actor = PhysXRuntime.physics().createRigidDynamic(pose);
 			if (body.kind == Kind.BLOCKS) {
 				for (Part p : body.parts) {
-					actor.attachShape(blockShape(mem, p.x(), p.y(), p.z()));
+					PxShape shape = blockShape(mem, p.x(), p.y(), p.z());
+					actor.attachShape(shape);
+					shape.release();
 				}
 			} else {
 				Vector3f half = body.vehicleHalf();
-				actor.attachShape(shape(mem, half.x, half.y, half.z, 0, 0, 0));
+				PxShape shape = shape(mem, half.x, half.y, half.z, 0, 0, 0);
+				actor.attachShape(shape);
+				shape.release();
 			}
 			body.actor = actor;
 			actor.setSolverIterationCounts(8, 2);
@@ -541,13 +548,36 @@ public final class RigidBodies implements AutoCloseable {
 		}
 	}
 
-	/** Pushes {@code body} with {@code force} (kilograms times blocks per second squared) at {@code at} (local). */
+	private record Shove(Body body, Vec3 force, Vec3 at) {
+	}
+
+	private final List<Shove> shoves = new ArrayList<>();
+
+	/**
+	 * Pushes {@code body} with {@code force} (kilograms times blocks per second squared) at {@code at}
+	 * (local) during the next step. Safe while a step runs: the push waits until that step is done.
+	 */
 	public void shove(Body body, Vec3 force, Vec3 at) {
-		try (MemoryStack mem = MemoryStack.stackPush()) {
-			PxRigidBodyExt.addForceAtPos(body.actor, PxVec3.createAt(mem, MemoryStack::nmalloc, (float) force.x, (float) force.y, (float) force.z),
-				PxVec3.createAt(mem, MemoryStack::nmalloc, (float) at.x, (float) at.y, (float) at.z));
-			body.actor.wakeUp();
+		shoves.add(new Shove(body, force, at));
+	}
+
+	/** Before a step starts (none running): the pushes asked for since the last one. */
+	void applyShoves() {
+		if (shoves.isEmpty()) {
+			return;
 		}
+		try (MemoryStack mem = MemoryStack.stackPush()) {
+			for (Shove sh : shoves) {
+				if (!bodies.contains(sh.body)) {
+					continue; // removed or broken since
+				}
+				PxRigidBodyExt.addForceAtPos(sh.body.actor,
+					PxVec3.createAt(mem, MemoryStack::nmalloc, (float) sh.force.x, (float) sh.force.y, (float) sh.force.z),
+					PxVec3.createAt(mem, MemoryStack::nmalloc, (float) sh.at.x, (float) sh.at.y, (float) sh.at.z));
+				sh.body.actor.wakeUp();
+			}
+		}
+		shoves.clear();
 	}
 
 	/** The boxes of a body in its own frame: centre x, y, z and half x, y, z, 6 floats each. */
