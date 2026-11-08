@@ -3,6 +3,22 @@
 All notable changes to Inertia are documented here. Versioning rules are described in
 [PLAN.md](PLAN.md#5-sürümleme).
 
+## [2.4.0] — Slime Update
+
+### Added
+- **Soft slime blocks.** The PhysX Slime Block (next to the lava buckets) places a slime block that
+  is a soft body: a cube of 384 tetrahedra simulated with finite elements on the GPU (the stable
+  Neo-Hookean material, solved with XPBD in Inertia's own CUDA kernels, 40 substeps a tick). It
+  falls, wobbles and squashes, and springs back into shape. Sneak + use picks it up again.
+- **It reacts to entities.** The player, animals, items and vehicles push it around; the weight of
+  whoever stands on it presses it down a little, they rest on the squashed surface and bounce on it
+  when they land fast, like on a vanilla slime block (not while sneaking). Walking on it is sticky.
+- **Slime blocks stick to each other** and rub against blocks and each other.
+- Drawn with the vanilla slime block texture (inner core and translucent shell) following the
+  squashed shape. Saved with the world (`slime-<dimension>.dat`); `/inertia clear` removes them.
+- Settings: `slimeStiffness`, `slimeStickiness`, `slimeEntityWeight`, `slimeFriction`,
+  `slimeDamping`, `slimeSubsteps`.
+
 ## [2.3.0] — Lava Update
 
 ### Added

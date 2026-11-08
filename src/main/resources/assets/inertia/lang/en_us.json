@@ -21,5 +21,8 @@
   "message.inertia.source_limit": "Inertia: at most %s sources",
   "message.inertia.source_blocked": "Inertia: a block is in the way",
   "item.inertia.lava_bucket": "PhysX Lava Bucket",
-  "item.inertia.lava_source": "PhysX Flowing Lava Bucket"
+  "item.inertia.lava_source": "PhysX Flowing Lava Bucket",
+  "item.inertia.slime_block": "PhysX Slime Block",
+  "message.inertia.slime_placed": "Inertia: slime block placed (%s)",
+  "message.inertia.slime_removed": "Inertia: slime block picked up (%s left)"
 }

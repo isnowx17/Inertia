@@ -106,6 +106,9 @@ public final class InertiaBenchmark implements ClientModInitializer {
 	/** Lava poured from the top of a brick tower onto sand, photographed while it spreads. */
 	private static final Scene LAVA = new Scene(new BlockPos[] {new BlockPos(0, -50, -1)}, new Object[0][], 100000, 100000, 100000, 100000);
 
+	/** Soft slime blocks: on the ground, stacked, dropped from high up; the player stands on one. */
+	private static final Scene SLIME = new Scene(new BlockPos[0], new Object[0][], 100000, 100000, 100000, 100000);
+
 	private enum Stage { WAIT_TITLE, CREATING, IN_WORLD, DONE }
 
 	private String label;
@@ -141,7 +144,7 @@ public final class InertiaBenchmark implements ClientModInitializer {
 		}
 		String sceneName = System.getProperty("inertia.benchmark.scene", "heavy");
 		scene = "light".equals(sceneName) ? LIGHT : "fill".equals(sceneName) ? FILL : "fill1".equals(sceneName) ? FILL_ONE
-			: "room".equals(sceneName) ? ROOM : "showcase".equals(sceneName) ? SHOWCASE : "lava".equals(sceneName) ? LAVA : HEAVY;
+			: "room".equals(sceneName) ? ROOM : "showcase".equals(sceneName) ? SHOWCASE : "lava".equals(sceneName) ? LAVA : "slime".equals(sceneName) ? SLIME : HEAVY;
 		LOGGER.info("Inertia benchmark '{}' armed ({} scene)", label, sceneName());
 		ScreenEvents.AFTER_INIT.register((client, screen, width, height) -> {
 			if (stage == Stage.WAIT_TITLE && !(screen instanceof CreateWorldScreen) && client.level == null
@@ -172,7 +175,7 @@ public final class InertiaBenchmark implements ClientModInitializer {
 	}
 
 	private String sceneName() {
-		return scene == LIGHT ? "light" : scene == FILL ? "fill" : scene == FILL_ONE ? "fill1" : scene == ROOM ? "room" : scene == SHOWCASE ? "showcase" : scene == LAVA ? "lava" : "heavy";
+		return scene == LIGHT ? "light" : scene == FILL ? "fill" : scene == FILL_ONE ? "fill1" : scene == ROOM ? "room" : scene == SHOWCASE ? "showcase" : scene == LAVA ? "lava" : scene == SLIME ? "slime" : "heavy";
 	}
 
 	private void createWorld(Minecraft client) {
@@ -299,6 +302,10 @@ public final class InertiaBenchmark implements ClientModInitializer {
 		}
 		if (scene == LAVA) {
 			lavaScene(client);
+			return;
+		}
+		if (scene == SLIME) {
+			slimeScene(client);
 			return;
 		}
 		if (worldTicks == 20) {
@@ -451,6 +458,53 @@ public final class InertiaBenchmark implements ClientModInitializer {
 	// ------------------------------------------------------------------------------------------
 	// Showcase
 	// ------------------------------------------------------------------------------------------
+
+	private void slimeScene(Minecraft client) {
+		var slime = InertiaClient.slime();
+		if (worldTicks == 20) {
+			applyOptions(client);
+			if (!client.gui.hud.isHidden()) {
+				client.gui.hud.toggle();
+			}
+			command(client, "time set 6000");
+			command(client, "weather clear");
+			command(client, "difficulty peaceful");
+			command(client, "fill -12 -61 -12 12 -61 12 minecraft:grass_block");
+			look(client, 5.5, -57.6, 6.5, 0.5, -60, 0);
+		}
+		if (worldTicks == 200) {
+			slime.place(new BlockPos(-2, -60, 0));
+			slime.place(new BlockPos(1, -60, 0));
+			slime.place(new BlockPos(1, -59, 0));
+			slime.place(new BlockPos(4, -54, 0));
+			startTick = worldTicks;
+		}
+		if (startTick < 0) {
+			return;
+		}
+		long t = worldTicks - startTick;
+		if (t % 20 == 0) {
+			LOGGER.info("SLIME t={} bodies={}", t, slime.bodyCount());
+		}
+		if (t == 120) {
+			shot(client, "slime-rest");
+			// Onto the slime block on its own (the player keeps their own physics).
+			hold = false;
+			command(client, "tp @a -1.5 -58.5 0.5 0 60");
+		}
+		if (t == 200) {
+			hold = true;
+			look(client, 3.5, -57.4, 5.5, -1.5, -59.6, 0.5);
+		}
+		if (t == 205) {
+			LOGGER.info("SLIME player y={} (slime top at rest -59.0)", client.player.getY());
+			shot(client, "slime-player");
+		}
+		if (t >= 210) {
+			stage = Stage.DONE;
+			client.stop();
+		}
+	}
 
 	private void lavaScene(Minecraft client) {
 		if (worldTicks == 20) {

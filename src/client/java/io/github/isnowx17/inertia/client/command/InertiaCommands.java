@@ -61,6 +61,9 @@ public final class InertiaCommands {
 				for (FluidManager manager : managers) {
 					removed += manager.clear();
 				}
+				if (io.github.isnowx17.inertia.client.InertiaClient.slime() != null) {
+					io.github.isnowx17.inertia.client.InertiaClient.slime().clear();
+				}
 				ctx.getSource().sendFeedback(Component.translatable("command.inertia.clear", removed));
 				return removed;
 			})));

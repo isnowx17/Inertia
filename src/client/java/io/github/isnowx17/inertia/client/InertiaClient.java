@@ -34,6 +34,13 @@ public final class InertiaClient implements ClientModInitializer {
 		return lava;
 	}
 
+	private static io.github.isnowx17.inertia.client.slime.SlimeWorld slime;
+
+	/** The soft slime blocks. */
+	public static io.github.isnowx17.inertia.client.slime.SlimeWorld slime() {
+		return slime;
+	}
+
 	/** Every liquid's manager: water, lava. */
 	public static java.util.List<FluidManager> allFluids() {
 		return java.util.List.of(fluids, lava);
@@ -91,5 +98,38 @@ public final class InertiaClient implements ClientModInitializer {
 			}
 		});
 		ClientCommandRegistrationCallback.EVENT.register((dispatcher, buildContext) -> InertiaCommands.register(dispatcher, allFluids()));
+
+		// Soft slime blocks (finite elements on the GPU).
+		slime = new io.github.isnowx17.inertia.client.slime.SlimeWorld(config);
+		var slimeRenderer = new io.github.isnowx17.inertia.client.slime.SlimeRenderer(slime);
+		((io.github.isnowx17.inertia.item.SlimeBlockItem) InertiaItems.SLIME_BLOCK).setClientHandler((player, cell, remove) -> {
+			if (!Minecraft.getInstance().hasSingleplayerServer()) {
+				return false;
+			}
+			if (remove) {
+				boolean removed = slime.removeLookedAt(player.getEyePosition(), player.getLookAngle(), 6.0);
+				if (removed) {
+					player.sendOverlayMessage(net.minecraft.network.chat.Component.translatable("message.inertia.slime_removed", slime.bodyCount()));
+				}
+				return removed;
+			}
+			if (cell == null || !player.level().getBlockState(cell).getCollisionShape(player.level(), cell).isEmpty()) {
+				return false;
+			}
+			boolean placed = slime.place(cell);
+			if (placed) {
+				player.level().playLocalSound(cell, net.minecraft.sounds.SoundEvents.SLIME_BLOCK_PLACE, net.minecraft.sounds.SoundSource.BLOCKS, 1f, 1f, false);
+			}
+			return placed;
+		});
+		ClientTickEvents.END_CLIENT_TICK.register(client -> {
+			slime.restoreSaved(client);
+			slime.tick(client);
+		});
+		net.fabricmc.fabric.api.event.lifecycle.v1.ServerTickEvents.START_SERVER_TICK.register(slime::supportEntities);
+		ClientPlayConnectionEvents.DISCONNECT.register((handler, client) -> slime.save());
+		net.fabricmc.fabric.api.event.lifecycle.v1.ServerLifecycleEvents.AFTER_SAVE.register(
+			(server, flush, force) -> Minecraft.getInstance().execute(slime::save));
+		LevelRenderEvents.COLLECT_SUBMITS.register(slimeRenderer::collectSubmits);
 	}
 }

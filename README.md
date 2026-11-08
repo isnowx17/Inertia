@@ -54,8 +54,10 @@ background).
   into the source (or click the same place again) to stop it; sneak + click stops all sources.
 - The **PhysX Lava Bucket** and the **PhysX Flowing Lava Bucket** (next to the vanilla lava
   bucket) do the same with lava: thick and slow, glowing, and it burns you.
-- `/inertia info` shows the GPU and simulation status, `/inertia clear` removes all water and lava
-  and stops all sources.
+- The **PhysX Slime Block** places a soft slime block: it wobbles, squashes under you and bounces
+  you like a slime block. Sneak + use picks it up again.
+- `/inertia info` shows the GPU and simulation status, `/inertia clear` removes all water, lava and
+  slime blocks and stops all sources.
 
 Water simulated by Inertia is separate from vanilla water: oceans, lakes and the normal water
 bucket are unchanged. The water is not saved: it disappears when you leave the world.
@@ -82,6 +84,10 @@ bucket are unchanged. The water is not saved: it disappears when you leave the w
 | `lavaFriction` | 0.8 | Lava's friction with blocks. |
 | `lavaCohesion` | 0.8 | How strongly the lava holds together. |
 | `lavaAdhesion` | 0.25 | How strongly the lava clings to blocks (runs down walls). |
+| `slimeStiffness` | 1500 | How stiff the slime blocks are (lower: softer, squash more). |
+| `slimeStickiness` | 0.06 | How strongly slime blocks stick to each other (0: not at all). |
+| `slimeEntityWeight` | 2.5 | How heavy entities are on slime (higher: they squash it more). |
+| `slimeSubsteps` | 40 | Solver substeps per tick (more: stiffer and steadier, more GPU work). |
 | `rippleStrength` | 1.0 | Strength of the surface ripples; 0 = perfectly smooth. |
 | `refractionStrength` | 1.0 | How strongly the water bends what is behind it. |
 | `waterAbsorption` | 1.0 | How quickly light is absorbed; higher makes deep water darker and bluer. |

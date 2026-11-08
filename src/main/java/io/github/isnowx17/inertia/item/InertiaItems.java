@@ -43,6 +43,14 @@ public final class InertiaItems {
 		new FluidSourceItem(new Item.Properties().setId(LAVA_SOURCE_KEY).stacksTo(1))
 	);
 
+	public static final ResourceKey<Item> SLIME_BLOCK_KEY = ResourceKey.create(Registries.ITEM, Inertia.id("slime_block"));
+
+	public static final Item SLIME_BLOCK = Registry.register(
+		BuiltInRegistries.ITEM,
+		SLIME_BLOCK_KEY,
+		new SlimeBlockItem(new Item.Properties().setId(SLIME_BLOCK_KEY).stacksTo(1))
+	);
+
 	private InertiaItems() {
 	}
 
@@ -50,7 +58,7 @@ public final class InertiaItems {
 		CreativeModeTabEvents.modifyOutputEvent(CreativeModeTabs.TOOLS_AND_UTILITIES)
 			.register(output -> {
 				output.insertAfter(Items.WATER_BUCKET, FLUID_BUCKET, FLUID_SOURCE);
-				output.insertAfter(Items.LAVA_BUCKET, LAVA_BUCKET, LAVA_SOURCE);
+				output.insertAfter(Items.LAVA_BUCKET, LAVA_BUCKET, LAVA_SOURCE, SLIME_BLOCK);
 			});
 	}
 }

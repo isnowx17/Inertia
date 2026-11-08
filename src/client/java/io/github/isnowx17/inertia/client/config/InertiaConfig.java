@@ -214,6 +214,24 @@ public final class InertiaConfig {
 	/** Lava: how strongly it clings to blocks (it runs down a wall as a sheet instead of falling off). */
 	public float lavaAdhesion = 0.25f;
 
+	/** Slime: Young's modulus of the jelly (higher: stiffer, squashes less). */
+	public float slimeStiffness = 1500f;
+
+	/** Slime: solver substeps per tick (more: stiffer and steadier, more GPU work). */
+	public int slimeSubsteps = 40;
+
+	/** Slime: how quickly its wobbling dies down, per second. */
+	public float slimeDamping = 1.5f;
+
+	/** Slime: friction with blocks and entities. */
+	public float slimeFriction = 1.5f;
+
+	/** Slime: stickiness between slime blocks, how far (blocks) touching slime still pulls together (0: not sticky). */
+	public float slimeStickiness = 0.06f;
+
+	/** Slime: how heavy entities are on it (per block of their box; a slime block weighs 1). */
+	public float slimeEntityWeight = 2.5f;
+
 	/** The quality level the foam's detail follows (see {@link #foamQuality}). */
 	public String effectiveFoamQuality() {
 		return "auto".equals(foamQuality) ? quality : foamQuality;
@@ -356,6 +374,12 @@ public final class InertiaConfig {
 		foamLifetime = clamp(orDefault(foamLifetime, 3f), 0.2f, 10f);
 		foamSize = clamp(orDefault(foamSize, 1f), 0.25f, 4f);
 		foamCoverage = clamp(orDefault(foamCoverage, 1f), 0.1f, 5f);
+		slimeStiffness = clamp(orDefault(slimeStiffness, 1500f), 50f, 20000f);
+		slimeStickiness = clamp(orDefault(slimeStickiness, 0.06f), 0f, 0.3f);
+		slimeSubsteps = clamp(slimeSubsteps, 4, 120);
+		slimeDamping = clamp(orDefault(slimeDamping, 1.5f), 0f, 20f);
+		slimeFriction = clamp(orDefault(slimeFriction, 1.5f), 0f, 5f);
+		slimeEntityWeight = clamp(orDefault(slimeEntityWeight, 2.5f), 0f, 10f);
 		lavaFriction = clamp(orDefault(lavaFriction, 0.8f), 0f, 5f);
 		lavaDamping = clamp(orDefault(lavaDamping, 0.05f), 0f, 10f);
 		lavaViscosity = clamp(orDefault(lavaViscosity, 8f), 0f, 50f);
