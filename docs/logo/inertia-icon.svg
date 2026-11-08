@@ -1,0 +1,35 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0E2A4D"/>
+      <stop offset="1" stop-color="#07152B"/>
+    </linearGradient>
+  </defs>
+  <rect x="0" y="0" width="512" height="512" rx="112" fill="url(#bg)"/>
+  <g transform="translate(-6,-24)">
+  <defs>
+    <linearGradient id="ibody" x1="0.15" y1="0.1" x2="0.85" y2="0.95">
+      <stop offset="0" stop-color="#7BE3FF"/>
+      <stop offset="0.55" stop-color="#2AA4F4"/>
+      <stop offset="1" stop-color="#155FD6"/>
+    </linearGradient>
+    <linearGradient id="isea" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#E6FBFF" stop-opacity="0.55"/>
+      <stop offset="1" stop-color="#E6FBFF" stop-opacity="0.05"/>
+    </linearGradient>
+    <radialGradient id="ishine" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0" stop-color="#FFFFFF" stop-opacity="0.95"/>
+      <stop offset="1" stop-color="#FFFFFF" stop-opacity="0"/>
+    </radialGradient>
+    <clipPath id="iclip"><path d="M150.0,214.0 Q199.4,271.3 220.1,340.3 A112,112 0 1 0 289.8,177.6 Q225.5,210.3 150.0,214.0 Z"/></clipPath>
+  </defs>
+  <circle cx="122" cy="202" r="10" fill="#9BE8FF" fill-opacity="0.85"/><circle cx="94" cy="190" r="7.5" fill="#9BE8FF" fill-opacity="0.6"/><circle cx="72" cy="181" r="5.5" fill="#9BE8FF" fill-opacity="0.42"/><circle cx="55" cy="174" r="4" fill="#9BE8FF" fill-opacity="0.28"/><circle cx="42" cy="169" r="3" fill="#9BE8FF" fill-opacity="0.18"/>
+  <path d="M150.0,214.0 Q199.4,271.3 220.1,340.3 A112,112 0 1 0 289.8,177.6 Q225.5,210.3 150.0,214.0 Z" fill="url(#ibody)"/>
+  <g clip-path="url(#iclip)">
+    <path d="M120,300 C175,272 225,330 280,302 C330,276 380,326 452,296 L452,420 L120,420 Z" fill="url(#isea)"/>
+    <path d="M120,330 C180,306 228,352 286,330 C336,310 388,352 452,326 L452,420 L120,420 Z" fill="#0B4FB8" fill-opacity="0.35"/>
+  </g>
+  <ellipse cx="352" cy="232" rx="44" ry="26" transform="rotate(-28 352 232)" fill="url(#ishine)"/>
+  <path d="M150.0,214.0 Q199.4,271.3 220.1,340.3 A112,112 0 1 0 289.8,177.6 Q225.5,210.3 150.0,214.0 Z" fill="none" stroke="#FFFFFF" stroke-opacity="0.35" stroke-width="3"/>
+  </g>
+</svg>

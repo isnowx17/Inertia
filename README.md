@@ -1,4 +1,9 @@
-# Inertia
+<h1 align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/logo/inertia-logo-light.png">
+    <img src="docs/logo/inertia-logo.png" alt="Inertia" width="560">
+  </picture>
+</h1>
 
 **Inertia is an advanced, professional physics engine for Minecraft: Java Edition.**
 
