@@ -34,7 +34,7 @@ final class WaterStorage {
 	private long savedKey = Long.MIN_VALUE;
 
 	/** The player entered {@code level}: reads its saved water in the background. */
-	void enter(Minecraft client, ClientLevel level, boolean enabled) {
+	void enter(Minecraft client, ClientLevel level, boolean enabled, FluidKind kind) {
 		file = null;
 		loading = null;
 		mayWrite = false;
@@ -45,7 +45,7 @@ final class WaterStorage {
 			return;
 		}
 		String dimension = level.dimension().identifier().toString().replace(':', '_').replace('/', '_');
-		file = server.getWorldPath(LevelResource.ROOT).resolve("inertia").resolve("water-" + dimension + ".dat");
+		file = server.getWorldPath(LevelResource.ROOT).resolve("inertia").resolve(kind.id + "-" + dimension + ".dat");
 		if (!enabled) {
 			mayWrite = true;
 			return;

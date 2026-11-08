@@ -196,6 +196,24 @@ public final class InertiaConfig {
 	/** Vorticity confinement: keeps swirls alive. */
 	public float waterVorticity = 4f;
 
+	/** Lava: friction with blocks (too high and it moves in jerks, leaving rings). */
+	public float lavaFriction = 0.8f;
+
+	/** Lava: how quickly all its motion dies down, falling too (keep low: viscosity makes it thick). */
+	public float lavaDamping = 0.05f;
+
+	/** Lava: viscosity (high: the lava moves as one thick mass). */
+	public float lavaViscosity = 8f;
+
+	/** Lava: surface tension (none: it would pull a thin sheet into drops). */
+	public float lavaSurfaceTension = 0f;
+
+	/** Lava: cohesion (keeps it together in thick tongues). */
+	public float lavaCohesion = 0.8f;
+
+	/** Lava: how strongly it clings to blocks (it runs down a wall as a sheet instead of falling off). */
+	public float lavaAdhesion = 0.25f;
+
 	/** The quality level the foam's detail follows (see {@link #foamQuality}). */
 	public String effectiveFoamQuality() {
 		return "auto".equals(foamQuality) ? quality : foamQuality;
@@ -338,6 +356,12 @@ public final class InertiaConfig {
 		foamLifetime = clamp(orDefault(foamLifetime, 3f), 0.2f, 10f);
 		foamSize = clamp(orDefault(foamSize, 1f), 0.25f, 4f);
 		foamCoverage = clamp(orDefault(foamCoverage, 1f), 0.1f, 5f);
+		lavaFriction = clamp(orDefault(lavaFriction, 0.8f), 0f, 5f);
+		lavaDamping = clamp(orDefault(lavaDamping, 0.05f), 0f, 10f);
+		lavaViscosity = clamp(orDefault(lavaViscosity, 8f), 0f, 50f);
+		lavaSurfaceTension = clamp(orDefault(lavaSurfaceTension, 0f), 0f, 0.2f);
+		lavaCohesion = clamp(orDefault(lavaCohesion, 0.8f), 0f, 2f);
+		lavaAdhesion = clamp(orDefault(lavaAdhesion, 0.25f), 0f, 2f);
 		waterFriction = clamp(orDefault(waterFriction, 0.3f), 0f, 1f);
 		waterDamping = clamp(orDefault(waterDamping, 0.05f), 0f, 1f);
 		waterViscosity = clamp(orDefault(waterViscosity, 0.01f), 0f, 1f);

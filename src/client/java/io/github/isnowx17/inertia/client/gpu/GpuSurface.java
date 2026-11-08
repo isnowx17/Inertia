@@ -195,39 +195,47 @@ public final class GpuSurface implements AutoCloseable {
 		}
 	}
 
-	private static GpuSurface instance;
+	/** One surface per liquid: 0 water, 1 lava. */
+	private static final GpuSurface[] INSTANCES = new GpuSurface[2];
+	private static final String[] NAMES = {"water", "lava"};
 	private static boolean failed;
+	/** Which liquid this surface is for (in the log). */
+	private String name = "water";
 
-	/** The GPU surface, created on first use (render thread); null where it cannot work. */
-	public static GpuSurface get() {
-		if (instance == null && !failed) {
+	/** The GPU surface of liquid {@code which}, created on first use (render thread); null where it cannot work. */
+	public static GpuSurface get(int which) {
+		if (INSTANCES[which] == null && !failed) {
 			try {
-				instance = new GpuSurface();
-				Inertia.LOGGER.info("Water surface is built on the GPU");
+				GpuSurface surface = new GpuSurface();
+				surface.name = NAMES[which];
+				INSTANCES[which] = surface;
+				Inertia.LOGGER.info("The {} surface is built on the GPU", NAMES[which]);
 			} catch (Throwable t) {
 				failed = true;
-				Inertia.LOGGER.warn("Building the water surface on the GPU is not possible here; the CPU builds it", t);
+				Inertia.LOGGER.warn("Building the surface on the GPU is not possible here; the CPU builds it", t);
 			}
 		}
-		return instance;
+		return INSTANCES[which];
 	}
 
-	/** The GPU surface if it was already created (the physics feeds it only then). */
-	public static GpuSurface existing() {
-		return instance;
+	/** The GPU surface of liquid {@code which} if it was already created (the physics feeds it only then). */
+	public static GpuSurface existing(int which) {
+		return INSTANCES[which];
 	}
 
-	/** Gives up on the GPU surface after an error (the CPU builds it from then on). */
+	/** Gives up on the GPU surfaces after an error (the CPU builds them from then on). */
 	private static void fail(Throwable t) {
-		Inertia.LOGGER.error("The GPU water surface failed; the CPU builds it from now on", t);
+		Inertia.LOGGER.error("The GPU surface failed; the CPU builds it from now on", t);
 		failed = true;
-		if (instance != null) {
-			try {
-				instance.close();
-			} catch (Throwable ignored) {
-				// already failing
+		for (int i = 0; i < INSTANCES.length; i++) {
+			if (INSTANCES[i] != null) {
+				try {
+					INSTANCES[i].close();
+				} catch (Throwable ignored) {
+					// already failing
+				}
+				INSTANCES[i] = null;
 			}
-			instance = null;
 		}
 	}
 
@@ -269,9 +277,9 @@ public final class GpuSurface implements AutoCloseable {
 	 * particles straight from PhysX's buffer, the ones before from the CPU (they follow every particle
 	 * added or removed since). Waits until the copy of PhysX's buffer is done.
 	 */
-	public static void feed(long physxPositions, float[] previous, int count, long prevNanos, long currNanos,
+	public static void feed(int which, long physxPositions, float[] previous, int count, long prevNanos, long currNanos,
 		int originX, int originY, int originZ, float[] frozenBoxes) {
-		GpuSurface surface = instance;
+		GpuSurface surface = INSTANCES[which];
 		if (surface == null) {
 			return;
 		}
@@ -429,8 +437,8 @@ public final class GpuSurface implements AutoCloseable {
 	 *
 	 * @return the newest finished surface, or null
 	 */
-	public static Built frame(long now, Settings settings, long[] lightKeys, int[] lightValues, int lightCount, long lightSerial) {
-		GpuSurface surface = instance;
+	public static Built frame(int which, long now, Settings settings, long[] lightKeys, int[] lightValues, int lightCount, long lightSerial) {
+		GpuSurface surface = INSTANCES[which];
 		if (surface == null) {
 			return null;
 		}
@@ -491,7 +499,7 @@ public final class GpuSurface implements AutoCloseable {
 			statCpuNanos += System.nanoTime() - cpuStart;
 			if (now - statNanos > 5_000_000_000L) {
 				if (statNanos != 0L) {
-					Inertia.LOGGER.info("GPU water surface: {} builds a second, {} ms GPU and {} ms CPU each, {} vertices",
+					Inertia.LOGGER.info("GPU {} surface: {} builds a second, {} ms GPU and {} ms CPU each, {} vertices", name,
 						String.format(java.util.Locale.ROOT, "%.1f", statBuilds / ((now - statNanos) / 1e9)),
 						String.format(java.util.Locale.ROOT, "%.2f", buildMillis),
 						String.format(java.util.Locale.ROOT, "%.2f", statCpuNanos / 1e6 / Math.max(1, statBuilds)),
@@ -551,7 +559,7 @@ public final class GpuSurface implements AutoCloseable {
 		if (maxBricks != oldBricks || maxStorage != oldStorage) {
 			d.synchronize(stream);
 			allocateGrid();
-			Inertia.LOGGER.info("GPU water surface grows: {} bricks, {} with storage", maxBricks, maxStorage);
+			Inertia.LOGGER.info("GPU {} surface grows: {} bricks, {} with storage", name, maxBricks, maxStorage);
 		}
 		if ((overflow & (8 | 16)) != 0 && nextOutputSize < MAX_OUTPUT_SIZE) {
 			for (Output o : outputs) {

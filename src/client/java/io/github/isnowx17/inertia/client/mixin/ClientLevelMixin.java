@@ -14,12 +14,16 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 abstract class ClientLevelMixin {
 	@Inject(method = "sendBlockUpdated", at = @At("HEAD"))
 	private void inertia$onBlockUpdated(BlockPos pos, BlockState old, BlockState current, int updateFlags, CallbackInfo ci) {
-		InertiaClient.fluids().onBlockChanged(pos);
+		for (var fluid : InertiaClient.allFluids()) {
+			fluid.onBlockChanged(pos);
+		}
 	}
 
 	@Inject(method = "setSectionDirtyWithNeighbors", at = @At("HEAD"))
 	private void inertia$onSectionDirty(int chunkX, int chunkY, int chunkZ, CallbackInfo ci) {
 		// Collision shapes never extend past their own section, so the neighbours stay valid.
-		InertiaClient.fluids().onSectionChanged(chunkX, chunkY, chunkZ);
+		for (var fluid : InertiaClient.allFluids()) {
+			fluid.onSectionChanged(chunkX, chunkY, chunkZ);
+		}
 	}
 }

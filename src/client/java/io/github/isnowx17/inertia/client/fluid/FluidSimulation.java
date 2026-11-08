@@ -155,6 +155,8 @@ public final class FluidSimulation implements AutoCloseable {
 	public static final int STRIDE = 4;
 
 	private final InertiaConfig config;
+	/** Water or lava. */
+	private final FluidKind kind;
 	private final FluidParameters params;
 	/** Current size of the particle buffer; grows by doubling up to {@link #limit}. */
 	private int capacity;
@@ -313,8 +315,9 @@ public final class FluidSimulation implements AutoCloseable {
 	private float addedMaxZ = Float.NEGATIVE_INFINITY;
 	private final LongOpenHashSet pendingUrgentSections = new LongOpenHashSet();
 
-	public FluidSimulation(InertiaConfig config) {
+	public FluidSimulation(InertiaConfig config, FluidKind kind) {
 		this.config = config;
+		this.kind = kind;
 		InertiaConfig.Quality quality = config.effectiveQuality();
 		this.params = FluidParameters.forSpacing(quality.particleSpacing());
 		this.limit = Math.max(quality.maxParticles(), config.particleLimit);
@@ -326,18 +329,20 @@ public final class FluidSimulation implements AutoCloseable {
 		this.scene = createScene();
 
 		try (MemoryStack mem = MemoryStack.stackPush()) {
-			// Water material. Low cohesion and surface tension keep thin water as one sheet instead of
-			// beads; friction and a little viscosity make it slow down and pool.
+			// Water: low cohesion and surface tension keep thin water as one sheet instead of beads;
+			// friction and a little viscosity make it slow down and pool. Lava: high friction, damping
+			// and viscosity make it a thick mass that creeps over the ground; no vorticity.
+			boolean lava = kind == FluidKind.LAVA;
 			material = PhysXRuntime.physics().createPBDMaterial(
-				config.waterFriction,      // friction
-				config.waterDamping,       // damping
-				0f,                        // adhesion
-				config.waterViscosity,     // viscosity
-				config.waterVorticity,     // vorticity confinement
-				config.waterSurfaceTension,// surface tension
-				config.waterCohesion,      // cohesion
-				0f,                        // lift
-				0f                         // drag
+				lava ? config.lavaFriction : config.waterFriction,             // friction
+				lava ? config.lavaDamping : config.waterDamping,               // damping
+				lava ? config.lavaAdhesion : 0f,                               // adhesion
+				lava ? config.lavaViscosity : config.waterViscosity,           // viscosity
+				lava ? 0f : config.waterVorticity,                             // vorticity confinement
+				lava ? config.lavaSurfaceTension : config.waterSurfaceTension, // surface tension
+				lava ? config.lavaCohesion : config.waterCohesion,             // cohesion
+				0f,                                                            // lift
+				0f                                                             // drag
 			);
 
 			particleSystem = PhysXRuntime.physics().createPBDParticleSystem(cuda, 96);
@@ -368,7 +373,8 @@ public final class FluidSimulation implements AutoCloseable {
 		terrain = new TerrainCollider(scene);
 		playerBody = new PlayerBody(scene);
 		entityBodies = new EntityBodies(scene);
-		if (config.stillWaterVolume) {
+		// Lava is not kept as a volume: its thick, slow mass would freeze in steps.
+		if (config.stillWaterVolume && kind == FluidKind.WATER) {
 			frozen = new FrozenColumns(params.spacing(), params.particlesPerAxis(), params.solidRestOffset());
 			frozenCollider = new FrozenCollider(scene, params.spacing(), params.solidRestOffset() - 0.5f * params.spacing());
 		} else {
@@ -425,7 +431,8 @@ public final class FluidSimulation implements AutoCloseable {
 			phases.put(i, phase);
 		}
 
-		int newMaxFoam = config.foam ? Math.min(newCapacity / 2, 262_144) : 0;
+		// Foam, spray and bubbles are water's; lava has none.
+		int newMaxFoam = config.foam && kind == FluidKind.WATER ? Math.min(newCapacity / 2, 262_144) : 0;
 		PxParticleBuffer newBuffer;
 		PxParticleAndDiffuseBuffer newDiffuseBuffer = null;
 		try (MemoryStack mem = MemoryStack.stackPush()) {
@@ -1293,7 +1300,7 @@ public final class FluidSimulation implements AutoCloseable {
 		// The particles of a step stand for the moment a tick after it was started: steps start with the
 		// (even) game ticks, while their results come in whenever the GPU is done.
 		long tickNanos = (long) (TICK_SECONDS * 1e9);
-		io.github.isnowx17.inertia.client.gpu.GpuSurface.feed(devicePositions, prevPos, activeCount,
+		io.github.isnowx17.inertia.client.gpu.GpuSurface.feed(kind.ordinal(), devicePositions, prevPos, activeCount,
 			previousLaunchNanos != 0L ? previousLaunchNanos + tickNanos : 0L, finishedLaunchNanos + tickNanos,
 			originX, originY, originZ, frozen != null ? frozen.boxes() : NO_BOXES);
 		stepLaunchNanos = System.nanoTime();
@@ -2315,6 +2322,11 @@ public final class FluidSimulation implements AutoCloseable {
 	}
 
 	/** Number of game ticks simulated so far. */
+	/** Water or lava. */
+	public FluidKind kind() {
+		return kind;
+	}
+
 	/** Where the water made noise in the newest step, or {@code null}. */
 	public io.github.isnowx17.inertia.util.WaterAcoustics.Result acoustics() {
 		return latestAcoustics;

@@ -15,9 +15,11 @@
   "command.inertia.info.frozen": "Still water kept as a volume: %s columns, as much water as %s particles",
   "command.inertia.clear": "Removed %s water particles",
   "item.inertia.fluid_source": "PhysX Flowing Water Bucket",
-  "message.inertia.source_added": "Inertia: water source on (%s active)",
-  "message.inertia.source_removed": "Inertia: water source off (%s active)",
-  "message.inertia.sources_cleared": "Inertia: all water sources off",
-  "message.inertia.source_limit": "Inertia: at most %s water sources",
-  "message.inertia.source_blocked": "Inertia: a block is in the way"
+  "message.inertia.source_added": "Inertia: source on (%s active)",
+  "message.inertia.source_removed": "Inertia: source off (%s active)",
+  "message.inertia.sources_cleared": "Inertia: all sources off",
+  "message.inertia.source_limit": "Inertia: at most %s sources",
+  "message.inertia.source_blocked": "Inertia: a block is in the way",
+  "item.inertia.lava_bucket": "PhysX Lava Bucket",
+  "item.inertia.lava_source": "PhysX Flowing Lava Bucket"
 }

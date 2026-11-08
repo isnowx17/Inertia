@@ -31,13 +31,13 @@ public class FluidSourceItem extends Item {
 		boolean toggle(Player player, BlockPos cell, boolean stopAll);
 	}
 
-	private static volatile ClientHandler clientHandler;
+	private volatile ClientHandler clientHandler;
 
 	public FluidSourceItem(Properties properties) {
 		super(properties);
 	}
 
-	public static void setClientHandler(ClientHandler handler) {
+	public void setClientHandler(ClientHandler handler) {
 		clientHandler = handler;
 	}
 

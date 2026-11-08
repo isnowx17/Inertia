@@ -52,8 +52,10 @@ background).
   source goes into the block in front of the face you click and keeps that block full of water,
   which flows out of it, down when there is room below, otherwise out along the ground. Put a block
   into the source (or click the same place again) to stop it; sneak + click stops all sources.
-- `/inertia info` shows the GPU and simulation status, `/inertia clear` removes all water and
-  stops all sources.
+- The **PhysX Lava Bucket** and the **PhysX Flowing Lava Bucket** (next to the vanilla lava
+  bucket) do the same with lava: thick and slow, glowing, and it burns you.
+- `/inertia info` shows the GPU and simulation status, `/inertia clear` removes all water and lava
+  and stops all sources.
 
 Water simulated by Inertia is separate from vanilla water: oceans, lakes and the normal water
 bucket are unchanged. The water is not saved: it disappears when you leave the world.
@@ -75,6 +77,11 @@ bucket are unchanged. The water is not saved: it disappears when you leave the w
 | `waterSounds` | true | Minecraft's own water sounds for Inertia's water: splashes where it hits something, flowing water where it runs fast, the player splashing in and swimming, and the buckets. |
 | `saveWater` | true | Save the water with the world, also water far away: the moving water, the still water and the flowing sources come back when you return. Saved when you leave, when the game saves, and every `autosaveSeconds`. |
 | `autosaveSeconds` | 60 | Seconds between automatic saves of the water (10–3600). |
+| `lavaViscosity` | 8.0 | How thick the lava is (higher: slower, thicker tongues). |
+| `lavaDamping` | 0.05 | How quickly all the lava's motion dies down, falling too. |
+| `lavaFriction` | 0.8 | Lava's friction with blocks. |
+| `lavaCohesion` | 0.8 | How strongly the lava holds together. |
+| `lavaAdhesion` | 0.25 | How strongly the lava clings to blocks (runs down walls). |
 | `rippleStrength` | 1.0 | Strength of the surface ripples; 0 = perfectly smooth. |
 | `refractionStrength` | 1.0 | How strongly the water bends what is behind it. |
 | `waterAbsorption` | 1.0 | How quickly light is absorbed; higher makes deep water darker and bluer. |

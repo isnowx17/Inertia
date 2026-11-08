@@ -27,11 +27,30 @@ public final class InertiaItems {
 		new FluidSourceItem(new Item.Properties().setId(FLUID_SOURCE_KEY).stacksTo(1))
 	);
 
+	public static final ResourceKey<Item> LAVA_BUCKET_KEY = ResourceKey.create(Registries.ITEM, Inertia.id("lava_bucket"));
+
+	public static final Item LAVA_BUCKET = Registry.register(
+		BuiltInRegistries.ITEM,
+		LAVA_BUCKET_KEY,
+		new FluidBucketItem(new Item.Properties().setId(LAVA_BUCKET_KEY).stacksTo(1))
+	);
+
+	public static final ResourceKey<Item> LAVA_SOURCE_KEY = ResourceKey.create(Registries.ITEM, Inertia.id("lava_source"));
+
+	public static final Item LAVA_SOURCE = Registry.register(
+		BuiltInRegistries.ITEM,
+		LAVA_SOURCE_KEY,
+		new FluidSourceItem(new Item.Properties().setId(LAVA_SOURCE_KEY).stacksTo(1))
+	);
+
 	private InertiaItems() {
 	}
 
 	public static void register() {
 		CreativeModeTabEvents.modifyOutputEvent(CreativeModeTabs.TOOLS_AND_UTILITIES)
-			.register(output -> output.insertAfter(Items.WATER_BUCKET, FLUID_BUCKET, FLUID_SOURCE));
+			.register(output -> {
+				output.insertAfter(Items.WATER_BUCKET, FLUID_BUCKET, FLUID_SOURCE);
+				output.insertAfter(Items.LAVA_BUCKET, LAVA_BUCKET, LAVA_SOURCE);
+			});
 	}
 }

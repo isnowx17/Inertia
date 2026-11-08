@@ -103,6 +103,9 @@ public final class InertiaBenchmark implements ClientModInitializer {
 			new BlockPos(0, -61, 4), new BlockPos(0, -61, -3)},
 		new Object[0][], 100000, 100000, 100000, 100000);
 
+	/** Lava poured from the top of a brick tower onto sand, photographed while it spreads. */
+	private static final Scene LAVA = new Scene(new BlockPos[] {new BlockPos(0, -50, -1)}, new Object[0][], 100000, 100000, 100000, 100000);
+
 	private enum Stage { WAIT_TITLE, CREATING, IN_WORLD, DONE }
 
 	private String label;
@@ -138,7 +141,7 @@ public final class InertiaBenchmark implements ClientModInitializer {
 		}
 		String sceneName = System.getProperty("inertia.benchmark.scene", "heavy");
 		scene = "light".equals(sceneName) ? LIGHT : "fill".equals(sceneName) ? FILL : "fill1".equals(sceneName) ? FILL_ONE
-			: "room".equals(sceneName) ? ROOM : "showcase".equals(sceneName) ? SHOWCASE : HEAVY;
+			: "room".equals(sceneName) ? ROOM : "showcase".equals(sceneName) ? SHOWCASE : "lava".equals(sceneName) ? LAVA : HEAVY;
 		LOGGER.info("Inertia benchmark '{}' armed ({} scene)", label, sceneName());
 		ScreenEvents.AFTER_INIT.register((client, screen, width, height) -> {
 			if (stage == Stage.WAIT_TITLE && !(screen instanceof CreateWorldScreen) && client.level == null
@@ -169,7 +172,7 @@ public final class InertiaBenchmark implements ClientModInitializer {
 	}
 
 	private String sceneName() {
-		return scene == LIGHT ? "light" : scene == FILL ? "fill" : scene == FILL_ONE ? "fill1" : scene == ROOM ? "room" : scene == SHOWCASE ? "showcase" : "heavy";
+		return scene == LIGHT ? "light" : scene == FILL ? "fill" : scene == FILL_ONE ? "fill1" : scene == ROOM ? "room" : scene == SHOWCASE ? "showcase" : scene == LAVA ? "lava" : "heavy";
 	}
 
 	private void createWorld(Minecraft client) {
@@ -292,6 +295,10 @@ public final class InertiaBenchmark implements ClientModInitializer {
 		}
 		if (scene == SHOWCASE) {
 			showcase(client);
+			return;
+		}
+		if (scene == LAVA) {
+			lavaScene(client);
 			return;
 		}
 		if (worldTicks == 20) {
@@ -445,6 +452,58 @@ public final class InertiaBenchmark implements ClientModInitializer {
 	// Showcase
 	// ------------------------------------------------------------------------------------------
 
+	private void lavaScene(Minecraft client) {
+		if (worldTicks == 20) {
+			applyOptions(client);
+			if (!client.gui.hud.isHidden()) {
+				client.gui.hud.toggle();
+			}
+			command(client, "time set 6000");
+			command(client, "weather clear");
+			command(client, "difficulty peaceful");
+			command(client, "fill -24 -61 -24 24 -61 24 minecraft:sand");
+			command(client, "fill -1 -60 -3 1 -51 -1 minecraft:bricks");
+			command(client, "fill -1 -50 -3 1 -50 -3 minecraft:bricks");
+			// A second tower with water, a little away: both liquids at once.
+			command(client, "fill 10 -60 -3 12 -51 -1 minecraft:stone_bricks");
+			look(client, 9, -55, 9, 0, -58.5, -1);
+		}
+		FluidManager lava = InertiaClient.lava();
+		FluidManager water = InertiaClient.fluids();
+		// Water first (as in a world that has water already), lava 300 ticks later; or lava alone.
+		boolean lavaOnly = Boolean.getBoolean("inertia.lava.only");
+		if (sourcesPlaced == 0 && worldTicks >= 200 && (lavaOnly || water.toggleSource(client.player, new BlockPos(11, -50, -1), false))) {
+			sourcesPlaced = 1;
+			startTick = worldTicks;
+		}
+		if (startTick < 0) {
+			return;
+		}
+		long t = worldTicks - startTick;
+		if (sourcesPlaced == 1 && (t >= 300 || lavaOnly) && !Boolean.getBoolean("inertia.lava.off") && lava.toggleSource(client.player, scene.sources()[0], false)) {
+			sourcesPlaced = 2;
+		}
+		if (t > 0 && t % 100 == 0 && lastShot != t) {
+			FluidSimulation w = water.simulation();
+			FluidSimulation l = lava.simulation();
+			LOGGER.info("STEPS t={} water: {} particles {} ms (simulate {} ms, {} substeps) limit {} | lava: {} particles {} ms limit {} | fps={}", t,
+				w != null ? w.activeCount() : 0, w != null ? String.format(java.util.Locale.ROOT, "%.1f", w.lastStepMillis()) : "-",
+				w != null ? String.format(java.util.Locale.ROOT, "%.1f", w.lastSimulateMillis()) : "-", w != null ? w.currentSubsteps() : 0,
+				w != null && w.atGpuLimit(), l != null ? l.activeCount() : 0,
+				l != null ? String.format(java.util.Locale.ROOT, "%.1f", l.lastStepMillis()) : "-", l != null && l.atGpuLimit(), client.getFps());
+		}
+		for (int k : new int[] {700, 1000}) {
+			if (t == k && lastShot != t) {
+				lastShot = t;
+				shot(client, "lava-" + k);
+			}
+		}
+		if (t >= Integer.getInteger("inertia.lava.ticks", 1020)) {
+			stage = Stage.DONE;
+			client.stop();
+		}
+	}
+
 	/** Pond centre and half widths. */
 	private static final int POND_RX = 9;
 	private int sourcesRemoved;
@@ -547,8 +606,10 @@ public final class InertiaBenchmark implements ClientModInitializer {
 		if (worldTicks % 100 == 0 && InertiaClient.fluids().simulation() != null) {
 			FluidSimulation s = InertiaClient.fluids().simulation();
 			var heard = s.acoustics();
-			LOGGER.info("WATER t={} active={} frozen={} fps={} splashes={} top={} flows={} top={}", worldTicks, s.activeCount(),
-				s.frozenParticles(), client.getFps(), heard != null ? heard.splashCount : -1,
+			LOGGER.info("WATER t={} active={} frozen={} fps={} step={} simulate={} substeps={} limit={} splashes={} top={} flows={} top={}", worldTicks, s.activeCount(),
+				s.frozenParticles(), client.getFps(), String.format(java.util.Locale.ROOT, "%.1f", s.lastStepMillis()),
+				String.format(java.util.Locale.ROOT, "%.1f", s.lastSimulateMillis()), s.currentSubsteps(), s.atGpuLimit(),
+				heard != null ? heard.splashCount : -1,
 				heard != null && heard.splashCount > 0 ? heard.splashes[3] : 0, heard != null ? heard.flowCount : -1,
 				heard != null && heard.flowCount > 0 ? heard.flows[3] : 0);
 

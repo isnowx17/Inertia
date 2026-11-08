@@ -135,6 +135,32 @@ public final class WaterPass implements AutoCloseable {
 		.withDepthStencilState(new DepthStencilState(CompareOp.GREATER_THAN_OR_EQUAL, false))
 		.build();
 
+	/**
+	 * Lava: opaque (it hides what is behind it, so no scene copy) and glowing, drawn like solid
+	 * geometry with depth writes; faces turned away are skipped.
+	 */
+	public static final RenderPipeline LAVA_PIPELINE = RenderPipeline.builder(RenderPipelines.ENTITY_SNIPPET)
+		.withLocation(Inertia.id("pipeline/lava"))
+		.withVertexShader(Inertia.id("core/lava"))
+		.withFragmentShader(Inertia.id("core/lava"))
+		.withVertexBinding(0, SURFACE_FORMAT)
+		.withPrimitiveTopology(PrimitiveTopology.TRIANGLES)
+		.withColorTargetState(ColorTargetState.DEFAULT)
+		.withCull(true)
+		.withDepthStencilState(DepthStencilState.DEFAULT)
+		.build();
+
+	/** Whether this pass draws lava (one pipeline, no scene copy, foam or particles) instead of water. */
+	private final boolean lava;
+
+	public WaterPass() {
+		this(false);
+	}
+
+	public WaterPass(boolean lava) {
+		this.lava = lava;
+	}
+
 	private static RenderPipeline surfacePipeline(String location, boolean cull, DepthStencilState depth) {
 		return RenderPipeline.builder(RenderPipelines.ENTITY_SNIPPET)
 			.withLocation(Inertia.id(location))
@@ -212,6 +238,7 @@ public final class WaterPass implements AutoCloseable {
 		RenderPipelines.registerOptional(PIPELINE_CULLED);
 		RenderPipelines.registerOptional(DEPTH_PIPELINE);
 		RenderPipelines.registerOptional(PARTICLE_PIPELINE);
+		RenderPipelines.registerOptional(LAVA_PIPELINE);
 	}
 
 	/** Whether the water shaders compiled on this machine. Checked once, on the render thread. */
@@ -219,7 +246,8 @@ public final class WaterPass implements AutoCloseable {
 		if (status == Status.UNKNOWN) {
 			boolean compiled = false;
 			try {
-				compiled = RenderSystem.getCompiledPipelineNullable(PIPELINE) != null
+				compiled = lava ? RenderSystem.getCompiledPipelineNullable(LAVA_PIPELINE) != null
+					: RenderSystem.getCompiledPipelineNullable(PIPELINE) != null
 					&& RenderSystem.getCompiledPipelineNullable(PIPELINE_CULLED) != null
 					&& RenderSystem.getCompiledPipelineNullable(DEPTH_PIPELINE) != null
 					&& RenderSystem.getCompiledPipelineNullable(PARTICLE_PIPELINE) != null;
@@ -228,9 +256,9 @@ public final class WaterPass implements AutoCloseable {
 			}
 			status = compiled && layoutMatches() ? Status.AVAILABLE : Status.FAILED;
 			if (status == Status.FAILED) {
-				Inertia.LOGGER.warn("Inertia water shader unavailable; using the simple water rendering");
+				Inertia.LOGGER.warn("Inertia {} shader unavailable; using the simple rendering", lava ? "lava" : "water");
 			} else {
-				Inertia.LOGGER.info("Inertia water shader active");
+				Inertia.LOGGER.info("Inertia {} shader active", lava ? "lava" : "water");
 			}
 		}
 		return status == Status.AVAILABLE;
@@ -292,6 +320,12 @@ public final class WaterPass implements AutoCloseable {
 		Vector3f sunDirection, float daylight, Vector3f originOffset, Matrix4f parameters
 	) {
 		boolean drawSurface = surface != null && surface.indexCount() > 0 && surface.vertexCount() > 0;
+		if (lava) {
+			if (drawSurface) {
+				drawLava(surface, sunDirection, daylight, originOffset, parameters);
+			}
+			return;
+		}
 		boolean drawParticles = particles != null && !particles.isEmpty();
 		if (!drawSurface && !drawParticles) {
 			return;
@@ -397,6 +431,38 @@ public final class WaterPass implements AutoCloseable {
 					pass.drawIndexed(6, particles.sprayCount(), 0, 0, 0);
 				}
 			}
+		}
+	}
+
+	/** The lava surface: opaque, straight into the main target with depth writes. */
+	private void drawLava(Surface surface, Vector3f sunDirection, float daylight, Vector3f originOffset, Matrix4f parameters) {
+		Minecraft minecraft = Minecraft.getInstance();
+		RenderTarget main = minecraft.gameRenderer.mainRenderTarget();
+		if (main.getColorTextureView() == null || main.getDepthTextureView() == null) {
+			return;
+		}
+		CommandEncoder encoder = RenderSystem.getDevice().createCommandEncoder();
+		// The surface is uploaded only when it changed (and not at all when it was built on the GPU).
+		if (surface.builtVertices() == null && surface.serial() != uploadedSurface) {
+			uploadSurface(encoder, surface);
+		}
+		GpuBuffer vertexBuffer = surface.builtVertices() != null ? surface.builtVertices() : surfaceVertices;
+		GpuBuffer indexBuffer = surface.builtIndices() != null ? surface.builtIndices() : surfaceIndices;
+		GpuBufferSlice transforms = RenderSystem.getDynamicUniforms().writeTransform(RenderSystem.getModelViewMatrixCopy(),
+			new Vector4f(sunDirection.x, sunDirection.y, sunDirection.z, daylight), originOffset, parameters);
+		AbstractTexture surfaceTexture = minecraft.getTextureManager().getTexture(SURFACE_TEXTURE);
+		var samplers = RenderSystem.getSamplerCache();
+		try (RenderPass pass = encoder.createRenderPass(
+			() -> "Inertia lava", main.getColorTextureView(), Optional.empty(), main.getDepthTextureView(), OptionalDouble.empty()
+		)) {
+			RenderSystem.bindDefaultUniforms(pass);
+			pass.setPipeline(RenderSystem.getCompiledPipeline(LAVA_PIPELINE));
+			pass.setUniform("DynamicTransforms", transforms);
+			pass.setUniform("Sampler0", surfaceTexture.getTextureView(), surfaceTexture.getSampler());
+			pass.setUniform("Sampler2", minecraft.gameRenderer.lightmap(), samplers.getClampToEdge(FilterMode.LINEAR));
+			pass.setVertexBuffer(0, vertexBuffer.slice(0, (long) surface.vertexCount() * WaterVertexLayout.STRIDE));
+			pass.setIndexBuffer(indexBuffer, IndexType.INT);
+			pass.drawIndexed(surface.indexCount(), 1, 0, 0, 0);
 		}
 	}
 

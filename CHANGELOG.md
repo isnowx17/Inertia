@@ -3,6 +3,24 @@
 All notable changes to Inertia are documented here. Versioning rules are described in
 [PLAN.md](PLAN.md#5-sürümleme).
 
+## [2.3.0] — Lava Update
+
+### Added
+- **Lava.** The PhysX Lava Bucket and the PhysX Flowing Lava Bucket (next to the vanilla lava
+  bucket) pour lava simulated by PhysX like the water, in a particle system of its own so the two do
+  not mix. Lava is thick and slow: high viscosity and cohesion, friction with the ground and a little
+  adhesion make it spread in tongues and run down walls; it falls at normal speed.
+- **Lava's look:** opaque and glowing with its own light, brighter and yellower where it is thick and
+  seen from the side, with slow fine wrinkles and an orange sun sheen. Its surface is built on the
+  GPU every frame like the water's (each liquid has its own GPU surface).
+- **A player in the lava burns.** Lava pops and bubbles, and its buckets make the lava bucket
+  sounds. Lava is saved with the world like the water (`lava-<dimension>.dat`).
+- Settings: `lavaViscosity`, `lavaDamping`, `lavaFriction`, `lavaCohesion`, `lavaAdhesion`,
+  `lavaSurfaceTension`.
+
+### Changed
+- Frame pacing is shared by all liquids.
+
 ## [2.2.0]
 
 ### Added

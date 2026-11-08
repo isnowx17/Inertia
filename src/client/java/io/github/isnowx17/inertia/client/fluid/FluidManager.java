@@ -36,8 +36,8 @@ public final class FluidManager {
 	private ClientLevel level;
 	private boolean failed;
 	private boolean warnedThisSession;
-	private double playerSubmersion;
-	private final WaterSounds sounds = new WaterSounds();
+	private volatile double playerSubmersion;
+	private final WaterSounds sounds;
 	private final WaterStorage storage = new WaterStorage();
 	private final java.util.List<Source> sources = new java.util.ArrayList<>();
 	private long lastSourceToggle = Long.MIN_VALUE / 2;
@@ -66,9 +66,22 @@ public final class FluidManager {
 	private static final long SOURCE_TOGGLE_COOLDOWN = 15;
 	private java.util.function.Supplier<String> waterShaderStatus = () -> "off";
 
-	public FluidManager(InertiaConfig config) {
+	public FluidManager(InertiaConfig config, FluidKind kind) {
 		this.config = config;
+		this.kind = kind;
+		this.sounds = new WaterSounds(kind);
 		java.util.Arrays.fill(steppedTicks, true);
+		ALL.add(this);
+	}
+
+	/** Every liquid's manager: the frame pacing is for all of them, once per frame. */
+	private static final java.util.List<FluidManager> ALL = new java.util.concurrent.CopyOnWriteArrayList<>();
+
+	private final FluidKind kind;
+
+	/** Water or lava. */
+	public FluidKind kind() {
+		return kind;
 	}
 
 	public FluidSimulation simulation() {
@@ -100,7 +113,7 @@ public final class FluidManager {
 			return; // Inertia is singleplayer only
 		}
 		PhysXRuntime.State state = PhysXRuntime.state();
-		if (state == PhysXRuntime.State.UNAVAILABLE || state == PhysXRuntime.State.FAILED) {
+		if (kind == FluidKind.WATER && (state == PhysXRuntime.State.UNAVAILABLE || state == PhysXRuntime.State.FAILED)) {
 			warnUnavailable(client.player);
 		}
 	}
@@ -111,7 +124,7 @@ public final class FluidManager {
 		closeSimulation();
 		forgetWaiting();
 		level = null;
-		storage.enter(Minecraft.getInstance(), null, false);
+		storage.enter(Minecraft.getInstance(), null, false, kind);
 	}
 
 	public void tick(Minecraft client) {
@@ -123,7 +136,7 @@ public final class FluidManager {
 			closeSimulation();
 			forgetWaiting();
 			level = current;
-			storage.enter(client, current, config.saveWater);
+			storage.enter(client, current, config.saveWater, kind);
 		}
 		if (current == null || client.player == null || client.isPaused()) {
 			return;
@@ -146,7 +159,8 @@ public final class FluidManager {
 			}
 			// The player feels the water every tick, from the newest measurement.
 			playerSubmersion = config.playerInteraction ? PlayerFluidInteraction.apply(simulation, client.player) : 0;
-			if (config.entityInteraction) {
+			// Water carries and lifts the other entities (lava only burns them, on the server).
+			if (config.entityInteraction && kind == FluidKind.WATER) {
 				EntityFluidInteraction.apply(simulation, client);
 			}
 			simulation.setAcousticsWanted(config.waterSounds);
@@ -166,7 +180,9 @@ public final class FluidManager {
 	 * soon as the step is done.
 	 */
 	public void onFrame(Minecraft client) {
-		paceFrame(client);
+		if (kind == FluidKind.WATER) {
+			paceFrame(client); // once per frame, for all liquids
+		}
 		if (!tickPending) {
 			return;
 		}
@@ -195,7 +211,11 @@ public final class FluidManager {
 	 * which then has to make room by removing water. Does nothing with vsync or a lower frame limit.
 	 */
 	private void paceFrame(Minecraft client) {
-		if (simulation == null || !simulation.wantsFramePacing() || client.options.enableVsync().get()) {
+		boolean wanted = false;
+		for (FluidManager manager : ALL) {
+			wanted |= manager.simulation != null && manager.simulation.wantsFramePacing();
+		}
+		if (!wanted || client.options.enableVsync().get()) {
 			paceNext = 0;
 			return;
 		}
@@ -388,7 +408,7 @@ public final class FluidManager {
 	/** A bucket's sound where water was poured ({@code empty}) or a source was turned off. */
 	private void pouredSound(Player player, Vec3 at, boolean empty) {
 		if (config.waterSounds) {
-			WaterSounds.bucket(player.level(), at, empty);
+			WaterSounds.bucket(player.level(), at, empty, kind);
 		}
 	}
 
@@ -469,7 +489,7 @@ public final class FluidManager {
 		saveWater(true);
 		closeSimulation();
 		forgetWaiting();
-		storage.enter(client, level, config.saveWater);
+		storage.enter(client, level, config.saveWater, kind);
 	}
 
 	/** Forgets the water that is not simulated (it was saved with its dimension). */
@@ -652,7 +672,7 @@ public final class FluidManager {
 
 		if (simulation == null) {
 			try {
-				simulation = new FluidSimulation(config);
+				simulation = new FluidSimulation(config, kind);
 				level = client.level;
 				Inertia.LOGGER.info(
 					"Fluid simulation started: {} particles (grows up to {}), {} per block",
@@ -682,10 +702,24 @@ public final class FluidManager {
 
 	/** Server thread: applies what the water does to the server's entities (see {@link EntityFluidInteraction}). */
 	public void serverTick(net.minecraft.server.MinecraftServer server) {
+		if (kind == FluidKind.LAVA) {
+			// A player in the lava burns, as in vanilla lava.
+			if (playerSubmersion > LAVA_BURNS_FROM) {
+				for (var player : server.getPlayerList().getPlayers()) {
+					if (!player.isSpectator() && !player.isCreative()) {
+						player.lavaHurt();
+					}
+				}
+			}
+			return;
+		}
 		if (config.entityInteraction) {
 			EntityFluidInteraction.serverTick(server);
 		}
 	}
+
+	/** Submersion in lava from which the player burns. */
+	private static final double LAVA_BURNS_FROM = 0.05;
 
 	/** Removes all water. */
 	public int clear() {
@@ -727,7 +761,9 @@ public final class FluidManager {
 	private void closeSimulation() {
 		playerSubmersion = 0;
 		sounds.reset();
-		EntityFluidInteraction.clear();
+		if (kind == FluidKind.WATER) {
+			EntityFluidInteraction.clear();
+		}
 		sources.clear();
 		pendingSpawns.clear();
 		tickPending = false;

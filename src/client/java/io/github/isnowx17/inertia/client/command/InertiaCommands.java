@@ -18,41 +18,49 @@ public final class InertiaCommands {
 	private InertiaCommands() {
 	}
 
-	public static void register(CommandDispatcher<FabricClientCommandSource> dispatcher, FluidManager manager) {
+	public static void register(CommandDispatcher<FabricClientCommandSource> dispatcher, java.util.List<FluidManager> managers) {
+		FluidManager first = managers.get(0);
 		dispatcher.register(literal("inertia")
 			.then(literal("info").executes(ctx -> {
 				FabricClientCommandSource source = ctx.getSource();
-				source.sendFeedback(Component.translatable("command.inertia.info.quality", manager.config().quality, manager.waterShaderStatus()));
+				source.sendFeedback(Component.translatable("command.inertia.info.quality", first.config().quality, first.waterShaderStatus()));
 				source.sendFeedback(Component.translatable(
 					"command.inertia.info.physx",
 					PhysXRuntime.state().name().toLowerCase(Locale.ROOT),
 					PhysXRuntime.statusDetail()
 				));
-				FluidSimulation sim = manager.simulation();
-				if (sim == null) {
-					source.sendFeedback(Component.translatable("command.inertia.info.idle"));
-				} else {
-					source.sendFeedback(Component.translatable(
+				for (FluidManager manager : managers) {
+					FluidSimulation sim = manager.simulation();
+					String name = manager.kind().id;
+					if (sim == null) {
+						source.sendFeedback(Component.literal(name + ": ").append(Component.translatable("command.inertia.info.idle")));
+						continue;
+					}
+					source.sendFeedback(Component.literal(name + ": ").append(Component.translatable(
 						"command.inertia.info.simulation",
 						sim.activeCount(),
 						sim.limit(),
 						sim.foamCount(),
 						sim.collisionSections(),
 						String.format(Locale.ROOT, "%.2f", sim.lastStepMillis())
-					));
-					source.sendFeedback(Component.translatable(
+					)));
+					source.sendFeedback(Component.literal(name + ": ").append(Component.translatable(
 						"command.inertia.info.solver",
 						sim.currentSubsteps(),
 						sim.currentIterations(),
-						sim.atGpuLimit() ? "✔" : "✘",
-						sim.sleeping() ? "✔" : "✘"
-					));
-					source.sendFeedback(Component.translatable("command.inertia.info.frozen", sim.frozenColumns(), sim.frozenParticles()));
+						sim.atGpuLimit() ? "\u2714" : "\u2718",
+						sim.sleeping() ? "\u2714" : "\u2718"
+					)));
+					source.sendFeedback(Component.literal(name + ": ")
+						.append(Component.translatable("command.inertia.info.frozen", sim.frozenColumns(), sim.frozenParticles())));
 				}
 				return 1;
 			}))
 			.then(literal("clear").executes(ctx -> {
-				int removed = manager.clear();
+				int removed = 0;
+				for (FluidManager manager : managers) {
+					removed += manager.clear();
+				}
 				ctx.getSource().sendFeedback(Component.translatable("command.inertia.clear", removed));
 				return removed;
 			})));

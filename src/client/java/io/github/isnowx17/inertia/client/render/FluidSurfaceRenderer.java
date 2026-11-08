@@ -242,9 +242,20 @@ public final class FluidSurfaceRenderer {
 		boolean cameraNearWater;
 	}
 
+	/** Draws lava instead of water: no foam, drops or GPU surface; the lava shader. */
+	private final boolean lava;
+	/** Which GPU surface this liquid uses (0 water, 1 lava). */
+	private int gpuSlot() {
+		return manager.kind().ordinal();
+	}
+
+	/** Lava's colour in the simple rendering. */
+	private static final int LAVA_COLOR = 0xFF6A10;
+
 	public FluidSurfaceRenderer(FluidManager manager, WaterPass waterPass) {
 		this.manager = manager;
 		this.waterPass = waterPass;
+		this.lava = manager.kind() == io.github.isnowx17.inertia.client.fluid.FluidKind.LAVA;
 		for (Result result : results) {
 			result.probeIds.defaultReturnValue(-1);
 		}
@@ -295,7 +306,7 @@ public final class FluidSurfaceRenderer {
 		refreshLightCache(level);
 
 		Vec3 cam = camera.pos;
-		int waterColor = BiomeColors.getAverageWaterColor(level, BlockPos.containing(cam)) & 0xFFFFFF;
+		int waterColor = lava ? LAVA_COLOR : BiomeColors.getAverageWaterColor(level, BlockPos.containing(cam)) & 0xFFFFFF;
 		InertiaConfig config = manager.config();
 
 		boolean shader = config.waterShader && waterPass.isAvailable();
@@ -309,7 +320,7 @@ public final class FluidSurfaceRenderer {
 				pendingGpu = config.gpuSurface && !client.isPaused() ? buildOnGpu(result, now) : null;
 				gpuSurfaceActive = pendingGpu != null;
 			} else {
-				submitSimpleSurface(context, result, cam, dt, waterColor, config.renderOpacity);
+				submitSimpleSurface(context, result, cam, dt, waterColor, lava ? 1f : config.renderOpacity);
 			}
 		}
 
@@ -411,7 +422,7 @@ public final class FluidSurfaceRenderer {
 		}
 		float foamDt = Math.max(0L, snapshot.tick() - foamTick) * TICK_SECONDS;
 		foamTick = snapshot.tick();
-		SurfaceFoam foamJob = config.foam && config.renderSurface() ? ensureFoam(config) : null;
+		SurfaceFoam foamJob = config.foam && config.renderSurface() && !lava ? ensureFoam(config) : null;
 		float foamLifetime = config.foamLifetime;
 		int diffuseCount = config.foam ? snapshot.diffuseCount() : 0;
 		float foamCell = mesherCell;
@@ -442,7 +453,7 @@ public final class FluidSurfaceRenderer {
 		target.lightsReady = false;
 		target.particleLightsReady = false;
 		FluidSurfaceMesher job = mesher;
-		boolean dropletsOn = config.droplets;
+		boolean dropletsOn = config.droplets && !lava;
 		float camX = (float) (cameraPosition.x - snapshot.originX());
 		float camY = (float) (cameraPosition.y - snapshot.originY());
 		float camZ = (float) (cameraPosition.z - snapshot.originZ());
@@ -1224,7 +1235,7 @@ public final class FluidSurfaceRenderer {
 
 	/** Builds the surface on the GPU for this frame (see GpuSurface); null when it cannot. */
 	private io.github.isnowx17.inertia.client.gpu.GpuSurface.Built buildOnGpu(Result result, long now) {
-		if (io.github.isnowx17.inertia.client.gpu.GpuSurface.get() == null || mesher == null) {
+		if (io.github.isnowx17.inertia.client.gpu.GpuSurface.get(gpuSlot()) == null || mesher == null) {
 			return null;
 		}
 		FluidSurfaceMesher m = mesher;
@@ -1251,7 +1262,7 @@ public final class FluidSurfaceRenderer {
 			foam ? map.texelsPerBlock : 0f, foam ? map.originX : 0f, foam ? map.originZ : 0f, foam ? map.width : 1f,
 			foam ? map.height : 1f, foam ? map.baseHeight : 0f, foam && result.timeScale == 1f ? result.dataNanos : 0L,
 			foam ? new WaterPass.FoamKey(map, map.version) : null);
-		var built = io.github.isnowx17.inertia.client.gpu.GpuSurface.frame(now, settings,
+		var built = io.github.isnowx17.inertia.client.gpu.GpuSurface.frame(gpuSlot(), now, settings,
 			gpuLightKeys, gpuLightValues, gpuLightCount, gpuLightSerial);
 		if (built == null || built.originX() != result.originX || built.originY() != result.originY || built.originZ() != result.originZ) {
 			return null;

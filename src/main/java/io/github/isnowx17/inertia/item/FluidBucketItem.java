@@ -33,13 +33,13 @@ public class FluidBucketItem extends Item {
 		boolean release(Player player, Vec3 center, Vec3 velocity);
 	}
 
-	private static volatile ClientHandler clientHandler;
+	private volatile ClientHandler clientHandler;
 
 	public FluidBucketItem(Properties properties) {
 		super(properties);
 	}
 
-	public static void setClientHandler(ClientHandler handler) {
+	public void setClientHandler(ClientHandler handler) {
 		clientHandler = handler;
 	}
 

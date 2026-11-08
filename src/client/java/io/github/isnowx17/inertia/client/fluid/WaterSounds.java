@@ -35,6 +35,12 @@ final class WaterSounds {
 	private static final double IN_WATER = 0.08;
 
 	private final RandomSource random = RandomSource.create();
+	/** Lava pops and bubbles instead of splashing. */
+	private final boolean lava;
+
+	WaterSounds(FluidKind kind) {
+		this.lava = kind == FluidKind.LAVA;
+	}
 	/** Per cell (and kind): the game time it may sound again. */
 	private final Long2LongOpenHashMap quietUntil = new Long2LongOpenHashMap();
 	private long heardTick = Long.MIN_VALUE;
@@ -54,10 +60,16 @@ final class WaterSounds {
 			if (quietUntil.size() > 4096) {
 				quietUntil.clear();
 			}
+			if (lava) {
+				lavaSounds(level, player, heard, now);
+				return;
+			}
 			splashes(level, player, heard, now);
 			flows(level, player, heard, now);
 		}
-		playerSounds(level, player, submersion);
+		if (!lava) {
+			playerSounds(level, player, submersion);
+		}
 	}
 
 	private void splashes(ClientLevel level, Player player, WaterAcoustics.Result heard, long now) {
@@ -152,10 +164,33 @@ final class WaterSounds {
 		lastSubmersion = submersion;
 	}
 
-	/** Water poured from a bucket or a source turned on or off. */
-	static void bucket(net.minecraft.world.level.Level level, Vec3 at, boolean empty) {
-		level.playLocalSound(at.x, at.y, at.z, empty ? SoundEvents.BUCKET_EMPTY : SoundEvents.BUCKET_FILL, SoundSource.BLOCKS,
-			1f, 1f, false);
+	/** Lava: pops where it falls and lands, a low bubbling where it moves. */
+	private void lavaSounds(ClientLevel level, Player player, WaterAcoustics.Result heard, long now) {
+		for (int i = 0; i < Math.min(heard.splashCount, 2); i++) {
+			Vec3 at = spot(heard, heard.splashes, i);
+			float amount = heard.splashes[i * WaterAcoustics.SPOT + 3];
+			boolean landed = heard.splashes[i * WaterAcoustics.SPOT + 5] > 0.5f || groundBelow(level, at);
+			if (!landed || at.distanceToSqr(player.getEyePosition()) > REACH * REACH || !mayPlay(at, 0, now, 8 + random.nextInt(14))) {
+				continue;
+			}
+			level.playLocalSound(at.x, at.y, at.z, SoundEvents.LAVA_POP, SoundSource.BLOCKS, Mth.clamp(0.2f + amount * 0.3f, 0.2f, 0.8f),
+				0.9f + random.nextFloat() * 0.25f, false);
+		}
+		for (int i = 0; i < Math.min(heard.flowCount, 1); i++) {
+			Vec3 at = spot(heard, heard.flows, i);
+			if (at.distanceToSqr(player.getEyePosition()) > SMALL_REACH * SMALL_REACH || !mayPlay(at, 1, now, 40 + random.nextInt(60))) {
+				continue;
+			}
+			level.playLocalSound(at.x, at.y, at.z, random.nextInt(3) == 0 ? SoundEvents.LAVA_POP : SoundEvents.LAVA_AMBIENT,
+				SoundSource.BLOCKS, 0.2f + random.nextFloat() * 0.2f, 0.9f + random.nextFloat() * 0.2f, false);
+		}
+	}
+
+	/** Water or lava poured from a bucket, or a source turned on or off. */
+	static void bucket(net.minecraft.world.level.Level level, Vec3 at, boolean empty, FluidKind kind) {
+		boolean lavaBucket = kind == FluidKind.LAVA;
+		level.playLocalSound(at.x, at.y, at.z, empty ? (lavaBucket ? SoundEvents.BUCKET_EMPTY_LAVA : SoundEvents.BUCKET_EMPTY)
+			: (lavaBucket ? SoundEvents.BUCKET_FILL_LAVA : SoundEvents.BUCKET_FILL), SoundSource.BLOCKS, 1f, 1f, false);
 	}
 
 	/** Whether there is something solid right below (falling water landing on the ground). */
