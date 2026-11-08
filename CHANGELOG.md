@@ -288,7 +288,7 @@ A big performance update: the same water, much less CPU time, and almost no work
   moves with the surface between rebuilds; thin foam is translucent, dense foam opaque white, and
   up close it breaks up into fine bubbles. It only shows on the surface it floats on, not on a
   stream passing above it.
-- The foam lace adapted from Realistic Water (0.5.0) is no longer used.
+- The foam lace from 0.5.0 is no longer used.
 - `foamSize` is now the width of the foam lines and `foamCoverage` (default 1.0) how quickly
   overlapping foam turns white; old values of `foamCoverage` are reset.
 
@@ -299,12 +299,10 @@ A big performance update: the same water, much less CPU time, and almost no work
 ## [0.5.0] — Beta
 
 ### Added
-- New foam, adapted from [Realistic Water](https://github.com/sskaffy/Realistic-Water) by
-  Skaffy and used with the author's permission. Foam particles on the surface add up to a foam
-  amount that turns into coverage the way Realistic Water does it (`1 - exp(-amount × coverage)`,
-  at most 90 %). The coverage is broken up by Realistic Water's foam lace, a fine web of bubble
-  walls (5 cm bubbles) that thickens where the foam is dense and fades to an even tone when the
-  bubbles are smaller than a pixel.
+- New foam. Foam particles on the surface add up to a foam amount that turns into coverage
+  (`1 - exp(-amount × coverage)`, at most 90 %). The coverage is broken up by a foam lace, a fine
+  web of bubble walls (5 cm bubbles) that thickens where the foam is dense and fades to an even
+  tone when the bubbles are smaller than a pixel.
 - `foamCoverage` setting (default 1.2). `foamSize` now scales the foam splats.
 - Foam is on again by default (also in existing config files).
 

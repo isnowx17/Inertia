@@ -282,7 +282,7 @@ public final class InertiaConfig {
 			foam = false;
 		}
 		if (configVersion < 7) {
-			// 0.5.0: foam is back, drawn like Realistic Water.
+			// 0.5.0: foam is back.
 			foam = true;
 		}
 		if (configVersion < 8) {
