@@ -155,6 +155,8 @@ public final class FluidSimulation implements AutoCloseable {
 	public static final int STRIDE = 4;
 
 	private final InertiaConfig config;
+	/** Realistic blocks, boats and minecarts (in the water's scene, so the two act on each other). */
+	private final RigidBodies rigids;
 	/** Water or lava. */
 	private final FluidKind kind;
 	private final FluidParameters params;
@@ -373,6 +375,7 @@ public final class FluidSimulation implements AutoCloseable {
 		terrain = new TerrainCollider(scene);
 		playerBody = new PlayerBody(scene);
 		entityBodies = new EntityBodies(scene);
+		rigids = new RigidBodies(scene);
 		// Lava is not kept as a volume: its thick, slow mass would freeze in steps.
 		if (config.stillWaterVolume && kind == FluidKind.WATER) {
 			frozen = new FrozenColumns(params.spacing(), params.particlesPerAxis(), params.solidRestOffset());
@@ -569,7 +572,7 @@ public final class FluidSimulation implements AutoCloseable {
 		awaitStep();
 		// Re-centre the scene whenever it is empty. While water exists the origin stays put; all
 		// water is within the despawn distance of the player, so floats remain precise.
-		if ((activeCount == 0 && frozenEmpty()) || !originSet) {
+		if ((activeCount == 0 && frozenEmpty() && rigids.isEmpty()) || !originSet) {
 			rebase(BlockPos.containing(center));
 		}
 
@@ -817,7 +820,7 @@ public final class FluidSimulation implements AutoCloseable {
 	 */
 	public int fillSource(BlockPos cell, float blocksPerSecond, int maxParticles) {
 		awaitStep();
-		if ((activeCount == 0 && frozenEmpty()) || !originSet) {
+		if ((activeCount == 0 && frozenEmpty() && rigids.isEmpty()) || !originSet) {
 			rebase(cell);
 		}
 		int perAxis = params.particlesPerAxis();
@@ -1230,7 +1233,7 @@ public final class FluidSimulation implements AutoCloseable {
 		if (frozen != null) {
 			updateFrozen(level, player);
 		}
-		if (activeCount == 0) {
+		if (activeCount == 0 && rigids.isEmpty()) {
 			foamCount = 0;
 			terrain.update(level, new LongOpenHashSet(), new LongOpenHashSet(), tick);
 			playerBody.remove();
@@ -1243,7 +1246,7 @@ public final class FluidSimulation implements AutoCloseable {
 		}
 
 		updateTerrain(level);
-		playerBody.update(player, originX, originY, originZ, config.playerInteraction);
+		playerBody.update(player, originX, originY, originZ, config.playerInteraction && !playerRiding && !playerNearBodies);
 		stepBodies = entityBodies.update(nearEntities, originX, originY, originZ, Math.max(PLAYER_SHELL, params.spacing() * 3));
 
 		ParticleScan.Settings s = scanSettings;
@@ -1316,7 +1319,8 @@ public final class FluidSimulation implements AutoCloseable {
 	 */
 	private boolean sleep(ClientLevel level, Player player) {
 		if (!sleeping) {
-			if (stillSteps < SLEEP_AFTER_STEPS || requestedSources.length > 0 || playerAtWater(player) || entitiesStir(level, player)) {
+			if (stillSteps < SLEEP_AFTER_STEPS || requestedSources.length > 0 || playerAtWater(player) || entitiesStir(level, player)
+				|| rigids.awake()) {
 				return false;
 			}
 			sleeping = true;
@@ -1336,7 +1340,7 @@ public final class FluidSimulation implements AutoCloseable {
 		double dy = player.getY() - sleepPlayerY;
 		double dz = player.getZ() - sleepPlayerZ;
 		if (terrain.refreshDirty(level) || requestedSources.length > 0 || playerAtWater(player) || (frozen != null && frozen.hasChanges())
-			|| entitiesStir(level, player)
+			|| entitiesStir(level, player) || rigids.awake()
 			|| dx * dx + dy * dy + dz * dz > sleepPlayerRange * sleepPlayerRange) {
 			wake();
 			return false;
@@ -1567,6 +1571,7 @@ public final class FluidSimulation implements AutoCloseable {
 		pendingStep = null;
 		try {
 			step.get();
+			rigids.capturePoses();
 		} catch (InterruptedException e) {
 			Thread.currentThread().interrupt();
 			throw new IllegalStateException("Interrupted while waiting for the physics step", e);
@@ -1707,7 +1712,7 @@ public final class FluidSimulation implements AutoCloseable {
 			return false;
 		}
 		awaitStep();
-		if ((activeCount == 0 && frozenEmpty()) || !originSet) {
+		if ((activeCount == 0 && frozenEmpty() && rigids.isEmpty()) || !originSet) {
 			rebase(around);
 		}
 		float spacing = params.spacing();
@@ -1900,6 +1905,14 @@ public final class FluidSimulation implements AutoCloseable {
 			bodies[k * 6 + 3] = (float) (b.maxX - originX);
 			bodies[k * 6 + 4] = (float) (b.maxY - originY);
 			bodies[k * 6 + 5] = (float) (b.maxZ - originZ);
+		}
+		// The realistic bodies too, reaching down to the floor: still water under and around them stays
+		// water (frozen water would hold up a body that should sink).
+		float[] rigidBoxes = rigids.boxes(RIGID_THAW_DEPTH);
+		if (rigidBoxes.length > 0) {
+			float[] all = java.util.Arrays.copyOf(bodies, bodies.length + rigidBoxes.length);
+			System.arraycopy(rigidBoxes, 0, all, bodies.length, rigidBoxes.length);
+			bodies = all;
 		}
 		ctx.bodies = bodies;
 		ctx.overloaded = stepLoadMillis > GPU_OVERLOADED_MILLIS;
@@ -2114,6 +2127,7 @@ public final class FluidSimulation implements AutoCloseable {
 			}
 		}
 
+		rigids.sections(originX, originY, originZ, required, urgent);
 		terrain.update(level, required, urgent, tick);
 	}
 
@@ -2322,6 +2336,45 @@ public final class FluidSimulation implements AutoCloseable {
 	}
 
 	/** Number of game ticks simulated so far. */
+	/** While the player rides a realistic vehicle their box is out of the scene (it would push the vehicle). */
+	private boolean playerRiding;
+
+	public void setPlayerRiding(boolean riding) {
+		playerRiding = riding;
+	}
+
+	/**
+	 * Near realistic bodies the player's box is out of the scene: it is infinitely heavy and would shove
+	 * them along at walking speed. The player pushes them with their own weight instead (RealisticController).
+	 */
+	private boolean playerNearBodies;
+
+	public void setPlayerNearBodies(boolean near) {
+		playerNearBodies = near;
+	}
+
+	/** While the player stands on a realistic body, their box's bottom is raised this far (blocks). */
+	public void setPlayerStanding(boolean standing) {
+		playerBody.setLift(standing ? 0.25f : 0f);
+	}
+
+	/** How far below a realistic body still water is kept unfrozen (blocks). */
+	private static final float RIGID_THAW_DEPTH = 32f;
+
+	/** The realistic blocks, boats and minecarts. Client thread, between steps ({@link #settle}). */
+	public RigidBodies rigids() {
+		return rigids;
+	}
+
+	/** Waits for a running step (so bodies can be changed), and sets the origin near {@code around} if nothing is here yet. */
+	public void settle(BlockPos around) {
+		awaitStep();
+		if ((activeCount == 0 && frozenEmpty() && rigids.isEmpty()) || !originSet) {
+			rebase(around);
+		}
+		wake();
+	}
+
 	/** Water or lava. */
 	public FluidKind kind() {
 		return kind;
@@ -2427,6 +2480,7 @@ public final class FluidSimulation implements AutoCloseable {
 		scanPool.shutdown();
 		playerBody.close();
 		entityBodies.close();
+		rigids.close();
 		terrain.close();
 		if (frozenCollider != null) {
 			frozenCollider.close();

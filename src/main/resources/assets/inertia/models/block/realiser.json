@@ -1,0 +1,8 @@
+{
+  "parent": "minecraft:block/cube_bottom_top",
+  "textures": {
+    "top": "inertia:block/realiser_top",
+    "bottom": "inertia:block/realiser_bottom",
+    "side": "inertia:block/realiser_side"
+  }
+}

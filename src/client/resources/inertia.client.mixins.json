@@ -3,7 +3,8 @@
 	"package": "io.github.isnowx17.inertia.client.mixin",
 	"compatibilityLevel": "JAVA_25",
 	"client": [
-		"ClientLevelMixin"
+		"ClientLevelMixin",
+		"MinecraftMixin"
 	],
 	"injectors": {
 		"defaultRequire": 1

@@ -23,6 +23,7 @@ import net.fabricmc.fabric.api.client.screen.v1.ScreenEvents;
 import net.fabricmc.fabric.api.event.Event;
 import net.minecraft.client.InactivityFpsLimit;
 import net.minecraft.client.Minecraft;
+import net.minecraft.world.phys.Vec3;
 import net.minecraft.client.Screenshot;
 import net.minecraft.client.gui.components.Button;
 import net.minecraft.client.gui.components.events.GuiEventListener;
@@ -109,6 +110,9 @@ public final class InertiaBenchmark implements ClientModInitializer {
 	/** Soft slime blocks: on the ground, stacked, dropped from high up; the player stands on one. */
 	private static final Scene SLIME = new Scene(new BlockPos[0], new Object[0][], 100000, 100000, 100000, 100000);
 
+	/** Realistic bodies: wood floats and stone sinks in a pool, a stuck-together tower falls, a boat floats. */
+	private static final Scene BODIES = new Scene(new BlockPos[0], new Object[0][], 100000, 100000, 100000, 100000);
+
 	private enum Stage { WAIT_TITLE, CREATING, IN_WORLD, DONE }
 
 	private String label;
@@ -144,7 +148,7 @@ public final class InertiaBenchmark implements ClientModInitializer {
 		}
 		String sceneName = System.getProperty("inertia.benchmark.scene", "heavy");
 		scene = "light".equals(sceneName) ? LIGHT : "fill".equals(sceneName) ? FILL : "fill1".equals(sceneName) ? FILL_ONE
-			: "room".equals(sceneName) ? ROOM : "showcase".equals(sceneName) ? SHOWCASE : "lava".equals(sceneName) ? LAVA : "slime".equals(sceneName) ? SLIME : HEAVY;
+			: "room".equals(sceneName) ? ROOM : "showcase".equals(sceneName) ? SHOWCASE : "lava".equals(sceneName) ? LAVA : "slime".equals(sceneName) ? SLIME : "bodies".equals(sceneName) ? BODIES : HEAVY;
 		LOGGER.info("Inertia benchmark '{}' armed ({} scene)", label, sceneName());
 		ScreenEvents.AFTER_INIT.register((client, screen, width, height) -> {
 			if (stage == Stage.WAIT_TITLE && !(screen instanceof CreateWorldScreen) && client.level == null
@@ -175,7 +179,7 @@ public final class InertiaBenchmark implements ClientModInitializer {
 	}
 
 	private String sceneName() {
-		return scene == LIGHT ? "light" : scene == FILL ? "fill" : scene == FILL_ONE ? "fill1" : scene == ROOM ? "room" : scene == SHOWCASE ? "showcase" : scene == LAVA ? "lava" : scene == SLIME ? "slime" : "heavy";
+		return scene == LIGHT ? "light" : scene == FILL ? "fill" : scene == FILL_ONE ? "fill1" : scene == ROOM ? "room" : scene == SHOWCASE ? "showcase" : scene == LAVA ? "lava" : scene == SLIME ? "slime" : scene == BODIES ? "bodies" : "heavy";
 	}
 
 	private void createWorld(Minecraft client) {
@@ -306,6 +310,10 @@ public final class InertiaBenchmark implements ClientModInitializer {
 		}
 		if (scene == SLIME) {
 			slimeScene(client);
+			return;
+		}
+		if (scene == BODIES) {
+			bodiesScene(client);
 			return;
 		}
 		if (worldTicks == 20) {
@@ -458,6 +466,72 @@ public final class InertiaBenchmark implements ClientModInitializer {
 	// ------------------------------------------------------------------------------------------
 	// Showcase
 	// ------------------------------------------------------------------------------------------
+
+	private void bodiesScene(Minecraft client) {
+		FluidManager water = InertiaClient.fluids();
+		if (worldTicks == 20) {
+			applyOptions(client);
+			if (!client.gui.hud.isHidden()) {
+				client.gui.hud.toggle();
+			}
+			command(client, "time set 6000");
+			command(client, "weather clear");
+			command(client, "difficulty peaceful");
+			command(client, "fill -12 -61 -12 12 -61 12 minecraft:grass_block");
+			// A pool, 6 x 6, 3 deep, filled with Inertia's water.
+			command(client, "fill -1 -63 -1 6 -61 6 minecraft:stone");
+			command(client, "fill 0 -62 0 5 -61 5 minecraft:air");
+			look(client, -3.5, -57.5, 9.5, 2.5, -61, 2);
+		}
+		if (worldTicks >= 120 && worldTicks < 128 && worldTicks % 4 == 0) {
+			for (int x = 0; x < 6; x++) {
+				for (int z = 0; z < 6; z++) {
+					water.releaseWater(client.player, new Vec3(x + 0.5, -61.5, z + 0.5), Vec3.ZERO);
+				}
+			}
+		}
+		if (worldTicks == 240) {
+			FluidSimulation sim = water.simulationForBodies(client.player, new BlockPos(2, -61, 2));
+			var rigids = sim.rigids();
+			Vec3 o = new Vec3(sim.originX(), sim.originY(), sim.originZ());
+			var planks = net.minecraft.world.level.block.Blocks.OAK_PLANKS.defaultBlockState();
+			var stone = net.minecraft.world.level.block.Blocks.STONE.defaultBlockState();
+			rigids.addBlock(planks, new Vec3(1.5, -57.5, 1.5).subtract(o), Vec3.ZERO);
+			rigids.addBlock(stone, new Vec3(4.5, -57.5, 1.5).subtract(o), Vec3.ZERO);
+			var tower = rigids.addBlock(net.minecraft.world.level.block.Blocks.BRICKS.defaultBlockState(), new Vec3(-4.5, -59.5, 3.5).subtract(o),
+				Vec3.ZERO);
+			rigids.attach(tower, 0, 1, 0, net.minecraft.world.level.block.Blocks.BRICKS.defaultBlockState());
+			rigids.attach(tower, 0, 2, 0, net.minecraft.world.level.block.Blocks.BRICKS.defaultBlockState());
+			rigids.attach(tower, 1, 2, 0, net.minecraft.world.level.block.Blocks.BRICKS.defaultBlockState());
+			rigids.addVehicle(io.github.isnowx17.inertia.client.fluid.RigidBodies.Kind.BOAT, "minecraft:oak_boat",
+				new Vec3(3.0, -59.0, 4.0).subtract(o), 30f);
+			startTick = worldTicks;
+		}
+		if (startTick < 0) {
+			return;
+		}
+		long t = worldTicks - startTick;
+		FluidSimulation sim = water.simulation();
+		if (t % 20 == 0 && sim != null) {
+			StringBuilder line = new StringBuilder();
+			for (var b : sim.rigids().bodies()) {
+				float[] p = b.current();
+				line.append(String.format(java.util.Locale.ROOT, " %s(%d)@%.2f,%.2f,%.2f", b.kind, b.parts().size(),
+					p[0] + sim.originX(), p[1] + sim.originY(), p[2] + sim.originZ()));
+			}
+			LOGGER.info("BODIES t={} water={}{}", t, sim.activeCount(), line);
+		}
+		if (t == 60) {
+			shot(client, "bodies-fall");
+		}
+		if (t == 160) {
+			shot(client, "bodies-rest");
+		}
+		if (t >= 170) {
+			stage = Stage.DONE;
+			client.stop();
+		}
+	}
 
 	private void slimeScene(Minecraft client) {
 		var slime = InertiaClient.slime();

@@ -36,6 +36,13 @@ public final class InertiaClient implements ClientModInitializer {
 
 	private static io.github.isnowx17.inertia.client.slime.SlimeWorld slime;
 
+	private static io.github.isnowx17.inertia.client.realistic.RealisticController realistic;
+
+	/** The player and the realistic bodies. */
+	public static io.github.isnowx17.inertia.client.realistic.RealisticController realistic() {
+		return realistic;
+	}
+
 	/** The soft slime blocks. */
 	public static io.github.isnowx17.inertia.client.slime.SlimeWorld slime() {
 		return slime;
@@ -98,6 +105,15 @@ public final class InertiaClient implements ClientModInitializer {
 			}
 		});
 		ClientCommandRegistrationCallback.EVENT.register((dispatcher, buildContext) -> InertiaCommands.register(dispatcher, allFluids()));
+
+		// Realistic blocks, boats and minecarts (PhysX rigid bodies in the water's scene).
+		realistic = new io.github.isnowx17.inertia.client.realistic.RealisticController(fluids);
+		var rigidRenderer = new io.github.isnowx17.inertia.client.realistic.RigidRenderer(fluids);
+		((io.github.isnowx17.inertia.realistic.RealisticItem) InertiaItems.REALISTIC).setClientHandler(realistic::place);
+		net.minecraft.client.gui.screens.MenuScreens.register(InertiaItems.REALISER_MENU,
+			io.github.isnowx17.inertia.client.realistic.RealiserScreen::new);
+		ClientTickEvents.END_CLIENT_TICK.register(realistic::tick);
+		LevelRenderEvents.COLLECT_SUBMITS.register(rigidRenderer::collectSubmits);
 
 		// Soft slime blocks (finite elements on the GPU).
 		slime = new io.github.isnowx17.inertia.client.slime.SlimeWorld(config);

@@ -24,5 +24,9 @@
   "item.inertia.lava_source": "PhysX Flowing Lava Bucket",
   "item.inertia.slime_block": "PhysX Slime Block",
   "message.inertia.slime_placed": "Inertia: slime block placed (%s)",
-  "message.inertia.slime_removed": "Inertia: slime block picked up (%s left)"
+  "message.inertia.slime_removed": "Inertia: slime block picked up (%s left)",
+  "block.inertia.realiser": "Realiser",
+  "container.inertia.realiser": "Realiser",
+  "item.inertia.realistic": "Realistic Thing",
+  "item.inertia.realistic.named": "Realistic %s"
 }

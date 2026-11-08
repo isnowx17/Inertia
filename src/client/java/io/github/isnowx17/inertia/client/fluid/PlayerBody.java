@@ -31,6 +31,13 @@ final class PlayerBody implements AutoCloseable {
 		this.scene = scene;
 	}
 
+	/** How far the box's bottom is raised (the player stands on a realistic body: the box must not press into it). */
+	private float lift;
+
+	void setLift(float lift) {
+		this.lift = lift;
+	}
+
 	void update(Player player, int originX, int originY, int originZ, boolean enabled) {
 		if (!enabled || player.isSpectator()) {
 			remove();
@@ -38,6 +45,9 @@ final class PlayerBody implements AutoCloseable {
 		}
 
 		AABB box = player.getBoundingBox();
+		if (lift > 0f) {
+			box = new AABB(box.minX, Math.min(box.minY + lift, box.maxY - 0.2), box.minZ, box.maxX, box.maxY, box.maxZ);
+		}
 		float hw = (float) Math.max(box.getXsize(), box.getZsize()) * 0.5f;
 		float hh = (float) box.getYsize() * 0.5f;
 		float cx = (float) ((box.minX + box.maxX) * 0.5 - originX);

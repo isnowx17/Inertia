@@ -3,6 +3,27 @@
 All notable changes to Inertia are documented here. Versioning rules are described in
 [PLAN.md](PLAN.md#5-sürümleme).
 
+## [3.0.0] — Realistic Update
+
+### Added
+- **The Realiser.** A new block (iron, redstone and a slime ball to craft): put a full block, a boat
+  or a minecart in, take its realistic version out (named and drawn like what it was made from).
+- **Realistic blocks** are PhysX rigid bodies in the water's scene: they fall, tumble and topple,
+  and the water and they act on each other: wood floats, stone and metals sink, and they make waves.
+  Densities are real (kilograms per cubic block, water 1000): wood 600, stone 2400, iron 7870,
+  gold 19300, netherite 20000 and so on. Still water under and around them is never frozen into the
+  volume, so they always meet real water.
+- **Blocks stick together:** a realistic block placed on a realistic block's face joins its body.
+  Breaking one block out splits what is left into the groups still touching.
+- **Hit** a realistic block to break it (it drops its realistic item); **hold use** on a body to
+  carry it, let go to throw it. Bodies are solid for the player, who can stand on them and pushes
+  them with a person's strength (wood slides, stone does not move).
+- **Realistic boats and minecarts** with the game's own models. Use to get in, sneak to get out
+  (sneak + use carries them instead). Boats row with W/A/S/D on the water up to a vanilla boat's
+  speed, with their paddles moving; minecarts follow rails (straight, slopes and curves) and are
+  pushed with W/S.
+- Everything is saved with the world (`bodies-<dimension>.dat`); `/inertia clear` removes it.
+
 ## [2.4.0] — Slime Update
 
 ### Added

@@ -56,8 +56,12 @@ background).
   bucket) do the same with lava: thick and slow, glowing, and it burns you.
 - The **PhysX Slime Block** places a soft slime block: it wobbles, squashes under you and bounces
   you like a slime block. Sneak + use picks it up again.
-- `/inertia info` shows the GPU and simulation status, `/inertia clear` removes all water, lava and
-  slime blocks and stops all sources.
+- The **Realiser** (iron ingots, redstone and a slime ball) turns a block, a boat or a minecart into
+  its **realistic** version: a PhysX body that falls, floats or sinks, sticks to other realistic
+  blocks it is placed on, breaks when hit and can be carried with use. Realistic boats and minecarts
+  can be ridden (sneak to get out); minecarts follow rails.
+- `/inertia info` shows the GPU and simulation status, `/inertia clear` removes all water, lava,
+  slime blocks and realistic bodies and stops all sources.
 
 Water simulated by Inertia is separate from vanilla water: oceans, lakes and the normal water
 bucket are unchanged. The water is not saved: it disappears when you leave the world.

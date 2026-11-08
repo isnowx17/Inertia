@@ -88,6 +88,11 @@ final class WaterStorage {
 		mayWrite = false;
 	}
 
+	/** The file of the realistic bodies next to the water's, or null outside a world. */
+	Path bodiesFile() {
+		return file == null ? null : file.resolveSibling(file.getFileName().toString().replaceFirst("^[a-z]+-", "bodies-"));
+	}
+
 	boolean mayWrite() {
 		return mayWrite && file != null;
 	}

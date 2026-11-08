@@ -9,6 +9,7 @@ import net.minecraft.client.multiplayer.ClientLevel;
 import net.minecraft.core.BlockPos;
 import net.minecraft.network.chat.Component;
 import net.minecraft.util.Mth;
+import java.util.List;
 import io.github.isnowx17.inertia.util.FrozenColumns;
 import io.github.isnowx17.inertia.util.WaterSaveFile;
 import it.unimi.dsi.fastutil.floats.FloatArrayList;
@@ -421,6 +422,7 @@ public final class FluidManager {
 		if (!config.saveWater || !storage.mayWrite()) {
 			return;
 		}
+		saveBodies();
 		try {
 			long[] cells = new long[sources.size()];
 			long key = (simulation != null ? simulation.version() : -1) * 31 + dormant.version();
@@ -479,6 +481,18 @@ public final class FluidManager {
 			walls.toFloatArray(), state.sources());
 	}
 
+	/**
+	 * The simulation the realistic bodies live in, created if needed (the water's: they act on each
+	 * other), with no step running and its origin set near {@code around}; null where it cannot run.
+	 */
+	public FluidSimulation simulationForBodies(Player player, BlockPos around) {
+		if (!ensureSimulation(player)) {
+			return null;
+		}
+		simulation.settle(around);
+		return simulation;
+	}
+
 	/** Still water asleep far away, outside the simulation (columns). */
 	public int dormantColumns() {
 		return dormant.columnCount();
@@ -492,8 +506,83 @@ public final class FluidManager {
 		storage.enter(client, level, config.saveWater, kind);
 	}
 
+	// ------------------------------------------------------------------------------------------
+	// Realistic bodies, saved with the water
+	// ------------------------------------------------------------------------------------------
+
+	private List<BodySaveFile.Saved> pendingBodies;
+	private boolean bodiesRead;
+
+	private void saveBodies() {
+		if (kind != FluidKind.WATER || !bodiesRead) {
+			return;
+		}
+		java.nio.file.Path file = storage.bodiesFile();
+		if (file == null) {
+			return;
+		}
+		List<BodySaveFile.Saved> list = new java.util.ArrayList<>();
+		if (pendingBodies != null) {
+			list.addAll(pendingBodies);
+		}
+		if (simulation != null) {
+			for (RigidBodies.Body b : simulation.rigids().bodies()) {
+				float[] p = b.current();
+				list.add(new BodySaveFile.Saved(b.kind, b.source, p[0] + simulation.originX(), p[1] + simulation.originY(),
+					p[2] + simulation.originZ(), p[3], p[4], p[5], p[6], List.copyOf(b.parts())));
+			}
+		}
+		try {
+			BodySaveFile.write(file, list);
+		} catch (Exception e) {
+			Inertia.LOGGER.error("Could not save the realistic bodies", e);
+		}
+	}
+
+	/** Reads the saved bodies once, and puts them back once the player is near and their chunks are loaded. */
+	private void restoreBodies(Minecraft client, ClientLevel current) {
+		if (kind != FluidKind.WATER) {
+			return;
+		}
+		if (!bodiesRead) {
+			java.nio.file.Path file = storage.bodiesFile();
+			if (file == null) {
+				return;
+			}
+			bodiesRead = true;
+			try {
+				pendingBodies = BodySaveFile.read(file);
+			} catch (Exception e) {
+				Inertia.LOGGER.error("Could not read the saved realistic bodies", e);
+				pendingBodies = null;
+			}
+		}
+		if (pendingBodies == null || pendingBodies.isEmpty() || PhysXRuntime.state() != PhysXRuntime.State.READY || failed) {
+			return;
+		}
+		Vec3 at = client.player.position();
+		var it = pendingBodies.iterator();
+		while (it.hasNext()) {
+			BodySaveFile.Saved b = it.next();
+			BlockPos pos = BlockPos.containing(b.x(), b.y(), b.z());
+			if (at.distanceToSqr(b.x(), b.y(), b.z()) > config.despawnDistance * (double) config.despawnDistance || !current.isLoaded(pos)) {
+				continue;
+			}
+			FluidSimulation sim = simulationForBodies(client.player, pos);
+			if (sim == null) {
+				return;
+			}
+			sim.rigids().restore(b.kind(), b.source(), b.parts(),
+				new Vec3(b.x() - sim.originX(), b.y() - sim.originY(), b.z() - sim.originZ()),
+				new org.joml.Quaternionf(b.qx(), b.qy(), b.qz(), b.qw()));
+			it.remove();
+		}
+	}
+
 	/** Forgets the water that is not simulated (it was saved with its dimension). */
 	private void forgetWaiting() {
+		pendingBodies = null;
+		bodiesRead = false;
 		dormant.clear();
 		pendingWater = null;
 		pendingBox = null;
@@ -510,6 +599,7 @@ public final class FluidManager {
 		if (loaded != null) {
 			takeSaved(current, loaded);
 		}
+		restoreBodies(client, current);
 		if (!client.hasSingleplayerServer() || PhysXRuntime.state() != PhysXRuntime.State.READY || failed) {
 			return;
 		}
@@ -725,8 +815,12 @@ public final class FluidManager {
 	public int clear() {
 		sources.clear();
 		pendingSpawns.clear();
-		// All of it: the water asleep far away and saved water not put back yet too.
+		// All of it: the water asleep far away and saved water not put back yet too, and the bodies.
 		dormant.clear();
+		if (simulation != null) {
+			simulation.settle(BlockPos.ZERO);
+			simulation.rigids().clear();
+		}
 		pendingWater = null;
 		pendingBox = null;
 		if (simulation == null) {

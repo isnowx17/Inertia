@@ -51,6 +51,38 @@ public final class InertiaItems {
 		new SlimeBlockItem(new Item.Properties().setId(SLIME_BLOCK_KEY).stacksTo(1))
 	);
 
+	public static final ResourceKey<net.minecraft.world.level.block.Block> REALISER_BLOCK_KEY =
+		ResourceKey.create(Registries.BLOCK, Inertia.id("realiser"));
+
+	public static final io.github.isnowx17.inertia.realistic.RealiserBlock REALISER_BLOCK = Registry.register(
+		BuiltInRegistries.BLOCK,
+		REALISER_BLOCK_KEY,
+		new io.github.isnowx17.inertia.realistic.RealiserBlock(net.minecraft.world.level.block.state.BlockBehaviour.Properties.of()
+			.setId(REALISER_BLOCK_KEY).strength(3.5f).requiresCorrectToolForDrops()
+			.sound(net.minecraft.world.level.block.SoundType.METAL).lightLevel(state -> 7))
+	);
+
+	public static final ResourceKey<Item> REALISER_KEY = ResourceKey.create(Registries.ITEM, Inertia.id("realiser"));
+
+	public static final Item REALISER = Registry.register(
+		BuiltInRegistries.ITEM,
+		REALISER_KEY,
+		new net.minecraft.world.item.BlockItem(REALISER_BLOCK, new Item.Properties().setId(REALISER_KEY).useBlockDescriptionPrefix())
+	);
+
+	public static final ResourceKey<Item> REALISTIC_KEY = ResourceKey.create(Registries.ITEM, Inertia.id("realistic"));
+
+	public static final Item REALISTIC = Registry.register(
+		BuiltInRegistries.ITEM,
+		REALISTIC_KEY,
+		new io.github.isnowx17.inertia.realistic.RealisticItem(new Item.Properties().setId(REALISTIC_KEY))
+	);
+
+	public static final net.minecraft.world.inventory.MenuType<io.github.isnowx17.inertia.realistic.RealiserMenu> REALISER_MENU =
+		Registry.register(BuiltInRegistries.MENU, Inertia.id("realiser"),
+			new net.minecraft.world.inventory.MenuType<>(io.github.isnowx17.inertia.realistic.RealiserMenu::new,
+				net.minecraft.world.flag.FeatureFlags.VANILLA_SET));
+
 	private InertiaItems() {
 	}
 
@@ -58,7 +90,7 @@ public final class InertiaItems {
 		CreativeModeTabEvents.modifyOutputEvent(CreativeModeTabs.TOOLS_AND_UTILITIES)
 			.register(output -> {
 				output.insertAfter(Items.WATER_BUCKET, FLUID_BUCKET, FLUID_SOURCE);
-				output.insertAfter(Items.LAVA_BUCKET, LAVA_BUCKET, LAVA_SOURCE, SLIME_BLOCK);
+				output.insertAfter(Items.LAVA_BUCKET, LAVA_BUCKET, LAVA_SOURCE, SLIME_BLOCK, REALISER);
 			});
 	}
 }
