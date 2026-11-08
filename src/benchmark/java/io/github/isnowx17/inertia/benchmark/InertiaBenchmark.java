@@ -538,6 +538,10 @@ public final class InertiaBenchmark implements ClientModInitializer {
 			}
 			InertiaClient.fluids().config().sourceFlow = Float.parseFloat(System.getProperty("inertia.showcase.flow", "15"));
 			buildShowcase(client);
+			if (Boolean.getBoolean("inertia.showcase.film")) {
+				// Filmed in slow motion where the machine is slow, and played back at the game's speed.
+				command(client, "tick rate " + Integer.getInteger("inertia.film.tps", 20));
+			}
 			look(client, 13.5, -53, 14.5, 0, -58.5, -3);
 		}
 		if (worldTicks % 100 == 0 && InertiaClient.fluids().simulation() != null) {
@@ -572,6 +576,16 @@ public final class InertiaBenchmark implements ClientModInitializer {
 		}
 		if (event(0, t, 300)) {
 			command(client, "summon minecraft:oak_boat 4.5 -58 3.5 {Rotation:[60f,0f]}");
+		}
+		if (Boolean.getBoolean("inertia.showcase.film")) {
+			// The film runs frame by frame (see filmFrame) once the pond is full.
+			if (filmStart == 0L && t >= at) {
+				hold = false;
+				command(client, "gamemode spectator @a");
+				client.options.cloudStatus().set(net.minecraft.client.CloudStatus.OFF);
+				filmStart = System.nanoTime();
+			}
+			return;
 		}
 		if (Boolean.getBoolean("inertia.showcase.travel")) {
 			// Far water: the player goes 400 blocks away (the water sleeps, then leaves the simulation),
@@ -682,7 +696,92 @@ public final class InertiaBenchmark implements ClientModInitializer {
 		}
 	}
 
+	// ------------------------------------------------------------------------------------------
+	// Film: camera moves along each shot frame by frame, the frames go into a video per shot
+	// ------------------------------------------------------------------------------------------
+
+	/**
+	 * Shots: eye from (x, y, z) to (x, y, z), looking from (x, y, z) to (x, y, z), seconds, time of day.
+	 */
+	private static final double[][] SHOTS = {
+		{22, -47, 22, 15, -52, 15, 0, -58, -3, 0, -58, -4, 8, 11800},
+		{8, -57, 5, -5, -57, 5, 2, -55, -7, -1, -55, -7, 7, 5000},
+		{3.5, -58.6, -1, 2.2, -58.8, -3.2, 0.5, -60, -6.5, 0.5, -60.2, -6.5, 6, 5000},
+		{4, -51, 7, -3, -51, 3, 0.5, -61, 0.5, -0.5, -61, -0.5, 6, 5000},
+		{9, -59.1, 2.5, 6, -59.3, 0.5, -8, -60.4, -0.5, -8, -60.4, -1.5, 8, 12300},
+		{-5, -61.7, 4, -1.5, -61.7, 0.5, 0.5, -60.4, -6, 1, -60.3, -6.5, 6, 5000},
+		{0, -56, 9, 0, -42, 28, 0, -58, -2, 0, -57, -4, 8, 5000}};
+	/** Seconds at the start of each shot before recording: the camera and the light settle. */
+	private static final double SHOT_PREP = 0.7;
+	private long filmStart;
+	private int filmShot = -1;
+	private FrameRecorder recorder;
+
+	private static double filmSpeed() {
+		return Math.min(1.0, Integer.getInteger("inertia.film.tps", 20) / 20.0);
+	}
+
+	private void filmFrame(Minecraft client) {
+		if (recorder == null) {
+			recorder = new FrameRecorder(System.getProperty("inertia.film.ffmpeg", "ffmpeg"), 60, filmSpeed());
+		}
+		// Film time: the game's time (slower than real time with a lower tick rate).
+		double t = (System.nanoTime() - filmStart) / 1e9 * filmSpeed();
+		int shot = 0;
+		double start = 0;
+		while (shot < SHOTS.length && t >= start + SHOT_PREP + SHOTS[shot][12]) {
+			start += SHOT_PREP + SHOTS[shot][12];
+			shot++;
+		}
+		if (shot != filmShot) {
+			recorder.stop();
+			filmShot = shot;
+			if (shot >= SHOTS.length) {
+				filmStart = 0L;
+				stage = Stage.DONE;
+				client.stop();
+				return;
+			}
+			command(client, "time set " + (int) SHOTS[shot][13]);
+		}
+		double[] s = SHOTS[shot];
+		double local = t - start;
+		double u = Math.max(0, Math.min(1, (local - SHOT_PREP) / s[12]));
+		double e = u * u * (3 - 2 * u);
+		double x = s[0] + (s[3] - s[0]) * e;
+		double y = s[1] + (s[4] - s[1]) * e;
+		double z = s[2] + (s[5] - s[2]) * e;
+		double lx = s[6] + (s[9] - s[6]) * e;
+		double ly = s[7] + (s[10] - s[7]) * e;
+		double lz = s[8] + (s[11] - s[8]) * e;
+		double dx = lx - x;
+		double dy = ly - y;
+		double dz = lz - z;
+		float yaw = (float) Math.toDegrees(Math.atan2(-dx, dz));
+		float pitch = (float) -Math.toDegrees(Math.atan2(dy, Math.sqrt(dx * dx + dz * dz)));
+		if (client.player != null) {
+			client.player.snapTo(x, y - 1.62, z, yaw, pitch);
+			client.player.setYHeadRot(yaw);
+			client.player.setDeltaMovement(net.minecraft.world.phys.Vec3.ZERO);
+			client.player.setOldPosAndRot();
+		}
+		if (local >= SHOT_PREP) {
+			if (!recorder.recording()) {
+				java.nio.file.Path dir = java.nio.file.Path.of(System.getProperty("inertia.film.dir", "film"));
+				try {
+					java.nio.file.Files.createDirectories(dir);
+				} catch (java.io.IOException ignored) {
+				}
+				recorder.start(dir.resolve("shot-" + shot + ".mp4").toAbsolutePath());
+			}
+			recorder.capture(client);
+		}
+	}
+
 	private void frame() {
+		if (filmStart != 0L) {
+			filmFrame(Minecraft.getInstance());
+		}
 		long now = System.nanoTime();
 		long cpu = threads.getCurrentThreadCpuTime();
 		if (phase != null && lastFrame != 0) {
