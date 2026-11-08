@@ -302,6 +302,20 @@ public final class FluidManager {
 			roomBank = Math.max(0, roomBank - used - spawned);
 		}
 		pendingSpawns.clear();
+		for (int i = 0; i + 3 < pendingBalls.size(); i += 4) {
+			Vec3 centre = new Vec3(pendingBalls.getDouble(i), pendingBalls.getDouble(i + 1), pendingBalls.getDouble(i + 2));
+			int added = simulation.spawnBall(current, centre, pendingBalls.getDouble(i + 3), full ? spawnBudget : Integer.MAX_VALUE);
+			if (full) {
+				spawnBudget = Math.max(0, spawnBudget - added);
+				spawned += added;
+				if (added == 0) {
+					tellGpuLimit(client.player);
+				}
+			} else if (added == 0) {
+				client.player.sendOverlayMessage(Component.translatable("message.inertia.limit_reached", simulation.limit()).withStyle(ChatFormatting.YELLOW));
+			}
+		}
+		pendingBalls.clear();
 		simulation.setSources(cells);
 		simulation.setTimeScale((float) steppedTickCount / RATE_WINDOW);
 		simulation.tick(current, client.player);
@@ -329,22 +343,21 @@ public final class FluidManager {
 		}
 	}
 
-	/** A block of water (or lava) at each of {@code centres}, at rest (a ball from a command): one sound for all. */
-	public int releaseBlocks(Player player, List<Vec3> centres) {
-		if (centres.isEmpty() || !ensureSimulation(player)) {
-			return 0;
+	/** Balls of water (or lava) to add with the next step: centre x, y, z and radius each. */
+	private final it.unimi.dsi.fastutil.doubles.DoubleArrayList pendingBalls = new it.unimi.dsi.fastutil.doubles.DoubleArrayList();
+
+	/** A round ball of water (or lava) at rest, {@code radius} blocks around {@code centre} (from a command). */
+	public boolean releaseBall(Player player, Vec3 centre, double radius) {
+		if (!ensureSimulation(player)) {
+			return false;
 		}
 		// Added with the next physics step, like water poured while the GPU is busy.
-		for (Vec3 c : centres) {
-			pendingSpawns.add(c.x);
-			pendingSpawns.add(c.y);
-			pendingSpawns.add(c.z);
-			pendingSpawns.add(0.0);
-			pendingSpawns.add(0.0);
-			pendingSpawns.add(0.0);
-		}
-		pouredSound(player, centres.get(centres.size() / 2), true);
-		return centres.size();
+		pendingBalls.add(centre.x);
+		pendingBalls.add(centre.y);
+		pendingBalls.add(centre.z);
+		pendingBalls.add(radius);
+		pouredSound(player, centre, true);
+		return true;
 	}
 
 	/** Handler for {@link io.github.isnowx17.inertia.item.FluidBucketItem}. */
@@ -839,6 +852,7 @@ public final class FluidManager {
 	public int clearLiquid() {
 		sources.clear();
 		pendingSpawns.clear();
+		pendingBalls.clear();
 		dormant.clear();
 		pendingWater = null;
 		pendingBox = null;

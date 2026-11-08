@@ -3,6 +3,13 @@
 All notable changes to Inertia are documented here. Versioning rules are described in
 [PLAN.md](PLAN.md#5-sürümleme).
 
+## [3.1.1]
+
+### Fixed
+- **`/inertia ball` and `/inertia lava` look round from the start.** The ball was made of whole
+  blocks of water, so it looked like a pile of cubes until it fell apart; it is now the particles of
+  a real sphere (none inside the ground).
+
 ## [3.1.0] — Commands Update
 
 ### Added

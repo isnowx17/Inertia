@@ -126,37 +126,14 @@ public final class InertiaCommands {
 		return player.getEyePosition().add(player.getLookAngle().scale(size * 0.5 + 2.5));
 	}
 
-	/** A ball of water or lava {@code size} blocks across in front of the player, falling from there. */
+	/** A round ball of water or lava {@code size} blocks across in front of the player, falling from there. */
 	private static int ball(CommandContext<FabricClientCommandSource> ctx, FluidManager manager, int size, String message) {
 		Player player = ctx.getSource().getPlayer();
-		if (manager == null) {
+		if (manager == null || !manager.releaseBall(player, inFront(player, size), size * 0.5)) {
 			return 0;
 		}
-		Vec3 centre = inFront(player, size);
-		double radiusSq = size * size / 4.0 + 0.01;
-		double mid = (size - 1) / 2.0;
-		List<Vec3> blocks = new ArrayList<>();
-		for (int x = 0; x < size; x++) {
-			for (int y = 0; y < size; y++) {
-				for (int z = 0; z < size; z++) {
-					double ox = x - mid, oy = y - mid, oz = z - mid;
-					if (ox * ox + oy * oy + oz * oz > radiusSq) {
-						continue;
-					}
-					Vec3 at = centre.add(ox, oy, oz);
-					BlockPos pos = BlockPos.containing(at);
-					// Not inside the ground: that water would only be pushed out again.
-					if (player.level().getBlockState(pos).getCollisionShape(player.level(), pos).isEmpty()) {
-						blocks.add(at);
-					}
-				}
-			}
-		}
-		int added = manager.releaseBlocks(player, blocks);
-		if (added > 0) {
-			ctx.getSource().sendFeedback(Component.translatable(message, added));
-		}
-		return added;
+		ctx.getSource().sendFeedback(Component.translatable(message, size));
+		return size;
 	}
 
 	/** A cube of slime blocks {@code size} blocks across in front of the player, in the open cells. */

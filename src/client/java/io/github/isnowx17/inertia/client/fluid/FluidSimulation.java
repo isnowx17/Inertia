@@ -647,6 +647,103 @@ public final class FluidSimulation implements AutoCloseable {
 	}
 
 	/**
+	 * Adds a ball of water (or lava) at rest: the particles of the block lattice within {@code radius}
+	 * of {@code center}, so it is round from the start; none inside the ground.
+	 *
+	 * @return number of particles added (fewer near the limit or with ground in the ball)
+	 */
+	public int spawnBall(net.minecraft.world.level.Level level, Vec3 center, double radius, int maxParticles) {
+		awaitStep();
+		if ((activeCount == 0 && frozenEmpty() && rigids.isEmpty()) || !originSet) {
+			rebase(BlockPos.containing(center));
+		}
+		float spacing = params.spacing();
+		// The lattice of whole blocks (as spawnBlock), so particles start at the water's rest spacing.
+		int lo = (int) Math.floor((-radius) / spacing);
+		int hi = (int) Math.ceil(radius / spacing);
+		double r2 = radius * radius;
+		double cx = Math.floor(center.x / spacing) * spacing + spacing * 0.5;
+		double cy = Math.floor(center.y / spacing) * spacing + spacing * 0.5;
+		double cz = Math.floor(center.z / spacing) * spacing + spacing * 0.5;
+		java.util.List<float[]> points = new java.util.ArrayList<>();
+		BlockPos.MutableBlockPos cell = new BlockPos.MutableBlockPos();
+		openCells.clear();
+		for (int y = lo; y <= hi; y++) {
+			for (int z = lo; z <= hi; z++) {
+				for (int x = lo; x <= hi; x++) {
+					double dx = x * spacing, dy = y * spacing, dz = z * spacing;
+					if (dx * dx + dy * dy + dz * dz > r2) {
+						continue;
+					}
+					double wx = cx + dx, wy = cy + dy, wz = cz + dz;
+					cell.set(Mth.floor(wx), Mth.floor(wy), Mth.floor(wz));
+					long key = cell.asLong();
+					byte open = openCells.getOrDefault(key, (byte) -1);
+					if (open < 0) {
+						open = (byte) (level.getBlockState(cell).getCollisionShape(level, cell).isEmpty() ? 1 : 0);
+						openCells.put(key, open);
+					}
+					if (open == 1) {
+						points.add(new float[] {(float) (wx - originX), (float) (wy - originY), (float) (wz - originZ)});
+					}
+				}
+			}
+		}
+		int count = Math.min(Math.min(points.size(), maxParticles), ensureRoom(Math.min(points.size(), maxParticles)));
+		if (count <= 0) {
+			return 0;
+		}
+		wake();
+		float jitter = spacing * 0.05f;
+		float invMass = 1f / params.particleMass();
+		ThreadLocalRandom random = ThreadLocalRandom.current();
+		int start = activeCount;
+		float minX = Float.MAX_VALUE, minZ = Float.MAX_VALUE, maxX = -Float.MAX_VALUE, maxZ = -Float.MAX_VALUE;
+		for (int k = 0; k < count; k++) {
+			float[] pt = points.get(k);
+			int i = start + k;
+			float px = pt[0] + (random.nextFloat() - 0.5f) * jitter;
+			float py = pt[1] + (random.nextFloat() - 0.5f) * jitter;
+			float pz = pt[2] + (random.nextFloat() - 0.5f) * jitter;
+			hostPos.put(i * 4, px).put(i * 4 + 1, py).put(i * 4 + 2, pz).put(i * 4 + 3, invMass);
+			hostVel.put(i * 4, 0f).put(i * 4 + 1, 0f).put(i * 4 + 2, 0f).put(i * 4 + 3, 0f);
+			currPos[i * STRIDE] = px;
+			currPos[i * STRIDE + 1] = py;
+			currPos[i * STRIDE + 2] = pz;
+			prevPos[i * STRIDE] = px;
+			prevPos[i * STRIDE + 1] = py;
+			prevPos[i * STRIDE + 2] = pz;
+			velocity[i * STRIDE] = 0f;
+			velocity[i * STRIDE + 1] = 0f;
+			velocity[i * STRIDE + 2] = 0f;
+			minX = Math.min(minX, px);
+			minZ = Math.min(minZ, pz);
+			maxX = Math.max(maxX, px);
+			maxZ = Math.max(maxZ, pz);
+		}
+		uploadRange(start, count, true);
+		activeCount += count;
+		buffer.setNbActiveParticles(activeCount);
+		version++;
+		noteAdded(minX, minZ, maxX, maxZ);
+		// Collision geometry around the ball (and where it falls) must exist before the next step.
+		int reach = (int) Math.ceil(radius / 16.0) + 1;
+		int sx = Mth.floor(center.x) >> 4;
+		int sy = Mth.floor(center.y) >> 4;
+		int sz = Mth.floor(center.z) >> 4;
+		for (int dx = -reach; dx <= reach; dx++) {
+			for (int dy = -reach - 1; dy <= reach; dy++) {
+				for (int dz = -reach; dz <= reach; dz++) {
+					pendingUrgentSections.add(SectionPos.asLong(sx + dx, sy + dy, sz + dz));
+				}
+			}
+		}
+		return count;
+	}
+
+	private final it.unimi.dsi.fastutil.longs.Long2ByteOpenHashMap openCells = new it.unimi.dsi.fastutil.longs.Long2ByteOpenHashMap();
+
+	/**
 	 * The water as it is now, copied for saving with the world: the particles of the newest step and
 	 * the still water kept as a volume. Client thread; does not wait for a running step.
 	 *
