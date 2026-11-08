@@ -3,6 +3,14 @@
 All notable changes to Inertia are documented here. Versioning rules are described in
 [PLAN.md](PLAN.md#5-sürümleme).
 
+## [3.0.1]
+
+### Fixed
+- **Shading of realistic blocks.** A block that had tipped over kept its model's face shading, so the
+  face looking up could be darker than its sides; every face is now shaded by the way it faces in the
+  world (blended while the body turns). Their light is also taken from one open cell, so corners
+  that touch the ground no longer darken them.
+
 ## [3.0.0] — Realistic Update
 
 ### Added

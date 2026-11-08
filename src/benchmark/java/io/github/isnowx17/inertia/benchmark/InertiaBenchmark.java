@@ -505,6 +505,15 @@ public final class InertiaBenchmark implements ClientModInitializer {
 			rigids.attach(tower, 1, 2, 0, net.minecraft.world.level.block.Blocks.BRICKS.defaultBlockState());
 			rigids.addVehicle(io.github.isnowx17.inertia.client.fluid.RigidBodies.Kind.BOAT, "minecraft:oak_boat",
 				new Vec3(3.0, -59.0, 4.0).subtract(o), 30f);
+			if (Boolean.getBoolean("inertia.bodies.shading")) {
+				// A real block and a realistic one side by side: their shading must match.
+				command(client, "setblock -8 -60 -6 minecraft:prismarine");
+				var prismarine = net.minecraft.world.level.block.Blocks.PRISMARINE.defaultBlockState();
+				var pair = rigids.addBlock(prismarine, new Vec3(-5.5, -59.5, -5.5).subtract(o), Vec3.ZERO);
+				rigids.attach(pair, 1, 0, 0, prismarine);
+				rigids.attach(pair, 1, 0, 1, prismarine);
+				look(client, -9.5, -57.2, -2.0, -6.0, -59.6, -5.5);
+			}
 			startTick = worldTicks;
 		}
 		if (startTick < 0) {

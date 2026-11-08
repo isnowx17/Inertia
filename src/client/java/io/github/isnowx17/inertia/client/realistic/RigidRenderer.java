@@ -73,16 +73,23 @@ public final class RigidRenderer {
 			pose.translate(x - cam.x, y - cam.y, z - cam.z);
 			pose.rotate(q);
 			if (view.kind() == RigidBodies.Kind.BLOCKS) {
+				// All of the body's light comes from the open cell at its centre: the body is no block of
+				// the world, so the light of the cells around it (inside the ground, say) would darken it.
+				BlockPos lightAt = BlockPos.containing(x, y, z);
+				if (!level.getBlockState(lightAt).getCollisionShape(level, lightAt).isEmpty()) {
+					lightAt = lightAt.above();
+				}
+				var shading = turned(level.cardinalLighting(), q);
 				for (RigidBodies.Part part : view.parts()) {
 					pose.pushPose();
 					pose.translate(part.x() - 0.5f, part.y() - 0.5f, part.z() - 0.5f);
-					MovingBlockRenderState state = new MovingBlockRenderState();
 					BlockPos at = BlockPos.containing(x + part.x(), y + part.y(), z + part.z());
+					LitBlock state = new LitBlock(lightAt);
 					state.randomSeedPos = BlockPos.ZERO;
 					state.blockPos = at;
 					state.blockState = part.state();
 					state.biome = level.getBiome(at);
-					state.cardinalLighting = level.cardinalLighting();
+					state.cardinalLighting = shading;
 					state.lightEngine = level.getLightEngine();
 					collector.submitMovingBlock(pose, state, 0);
 					pose.popPose();
@@ -117,6 +124,42 @@ public final class RigidRenderer {
 		}
 		standIns.keySet().removeIf(id -> !seen.contains(id));
 		paddles.keySet().removeIf(id -> !seen.contains(id));
+	}
+
+	/**
+	 * The face shading for a turned body: each face of the model gets the shade of the way it faces in
+	 * the world (a block on its side has its top shaded like a side, and the side that faces up lit
+	 * like a top), blended by the normal's parts while the body is between two of those ways.
+	 */
+	private static net.minecraft.world.level.CardinalLighting turned(net.minecraft.world.level.CardinalLighting world, Quaternionf q) {
+		float[] shade = new float[6];
+		for (net.minecraft.core.Direction face : net.minecraft.core.Direction.values()) {
+			org.joml.Vector3f n = q.transform(new org.joml.Vector3f(face.getStepX(), face.getStepY(), face.getStepZ()));
+			shade[face.get3DDataValue()] = n.x * n.x * (n.x > 0 ? world.east() : world.west())
+				+ n.y * n.y * (n.y > 0 ? world.up() : world.down())
+				+ n.z * n.z * (n.z > 0 ? world.south() : world.north());
+		}
+		// get3DDataValue order: down, up, north, south, west, east (the record's order too).
+		return new net.minecraft.world.level.CardinalLighting(shade[0], shade[1], shade[2], shade[3], shade[4], shade[5]);
+	}
+
+	/** A moving block whose light is the same everywhere: the light of one cell. */
+	private static final class LitBlock extends MovingBlockRenderState {
+		private final BlockPos lightAt;
+
+		LitBlock(BlockPos lightAt) {
+			this.lightAt = lightAt;
+		}
+
+		@Override
+		public int getBrightness(net.minecraft.world.level.LightLayer layer, BlockPos pos) {
+			return getLightEngine().getLayerListener(layer).getLightValue(lightAt);
+		}
+
+		@Override
+		public int getRawBrightness(BlockPos pos, int darkening) {
+			return getLightEngine().getRawBrightness(lightAt, darkening);
+		}
 	}
 
 	private static Entity create(ClientLevel level, String source) {
