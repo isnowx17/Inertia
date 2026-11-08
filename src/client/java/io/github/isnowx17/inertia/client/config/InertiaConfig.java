@@ -101,6 +101,12 @@ public final class InertiaConfig {
 	/** Minecraft's own water sounds for the water: splashes, flowing water, swimming, buckets. */
 	public boolean waterSounds = true;
 
+	/** Save the water with the world (when leaving it, when the game saves, and every {@link #autosaveSeconds}). */
+	public boolean saveWater = true;
+
+	/** Seconds between automatic saves of the water. */
+	public int autosaveSeconds = 60;
+
 	/** Surface smoothing radius relative to the surface cell size. Larger is smoother and rounder. */
 	public float surfaceSmoothness = 2.0f;
 
@@ -315,6 +321,7 @@ public final class InertiaConfig {
 		surfaceCellSize = clamp(orDefault(surfaceCellSize, 0.15f), 0.05f, 0.5f);
 		substepsPerTick = clamp(substepsPerTick, 1, 8);
 		despawnDistance = clamp(despawnDistance, 16, 512);
+		autosaveSeconds = clamp(autosaveSeconds, 10, 3600);
 		if (!RENDER_SURFACE.equals(renderMode) && !RENDER_PARTICLES.equals(renderMode)) {
 			renderMode = RENDER_SURFACE;
 		}

@@ -47,6 +47,9 @@ public final class InertiaClient implements ClientModInitializer {
 		net.fabricmc.fabric.api.event.lifecycle.v1.ServerTickEvents.START_SERVER_TICK.register(fluids::serverTick);
 		ClientPlayConnectionEvents.JOIN.register((handler, sender, client) -> fluids.onJoin(client));
 		ClientPlayConnectionEvents.DISCONNECT.register((handler, client) -> fluids.onDisconnect());
+		// The game saving the world (autosave, /save-all, pausing to quit) saves the water too.
+		net.fabricmc.fabric.api.event.lifecycle.v1.ServerLifecycleEvents.AFTER_SAVE.register(
+			(server, flush, force) -> Minecraft.getInstance().execute(() -> fluids.saveWater(false)));
 		// A game tick that came while the GPU was busy is simulated on the first frame after.
 		LevelRenderEvents.START_MAIN.register(context -> fluids.onFrame(Minecraft.getInstance()));
 		LevelRenderEvents.END_MAIN.register(context -> {

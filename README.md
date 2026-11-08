@@ -63,11 +63,13 @@ bucket are unchanged. The water is not saved: it disappears when you leave the w
 | `particleLimit` | 2097152 | Most water particles; the buffer grows up to this as you add water. |
 | `keepRealTime` | true | Keep the water flowing at full speed: when the GPU cannot simulate more water in real time, new water replaces calm water, so the amount stops growing. When off, the water can grow up to `particleLimit` but runs in slow motion once the GPU cannot keep up. |
 | `sourceFlow` | 3.0 | Water a flowing source lets out, in blocks of water per second (also its outflow speed). |
-| `despawnDistance` | 96 | Water further away from you than this is removed. |
+| `despawnDistance` | 96 | Water is simulated this far around you. Water further away is not removed: it sleeps as still water where it is (beyond twice this distance outside the simulation, not drawn) and comes back when you return. |
 | `playerInteraction` | true | Whether water pushes, slows and lifts the player. |
 | `waterShader` | true | Draw the water with Inertia's shader (refraction, depth colour, ripples, sun glints). Falls back automatically if unsupported. |
 | `gpuSurface` | true | Build the water surface on the GPU every frame (with the water shader, NVIDIA OpenGL). Falls back to the CPU where it cannot work. |
 | `waterSounds` | true | Minecraft's own water sounds for Inertia's water: splashes where it hits something, flowing water where it runs fast, the player splashing in and swimming, and the buckets. |
+| `saveWater` | true | Save the water with the world, also water far away: the moving water, the still water and the flowing sources come back when you return. Saved when you leave, when the game saves, and every `autosaveSeconds`. |
+| `autosaveSeconds` | 60 | Seconds between automatic saves of the water (10–3600). |
 | `rippleStrength` | 1.0 | Strength of the surface ripples; 0 = perfectly smooth. |
 | `refractionStrength` | 1.0 | How strongly the water bends what is behind it. |
 | `waterAbsorption` | 1.0 | How quickly light is absorbed; higher makes deep water darker and bluer. |

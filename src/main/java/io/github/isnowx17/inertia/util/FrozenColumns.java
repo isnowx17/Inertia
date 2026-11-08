@@ -68,6 +68,13 @@ public final class FrozenColumns {
 	static final int SOURCE_COLUMNS = 2;
 	/** Steps without freezing around a block that changed. */
 	static final int CHANGE_QUIET_STEPS = 40;
+	/**
+	 * Dormant water (beyond the simulated distance) wakes only this much closer than where it went to
+	 * sleep, so water at the edge does not wake and sleep in turn.
+	 */
+	public static final float WAKE_MARGIN = 8f;
+	/** How far down (blocks) parked water looks for the floor it settles on. */
+	private static final int PARK_FALL = 64;
 
 	private static final int[] DX = {-1, 1, 0, 0};
 	private static final int[] DZ = {0, 0, -1, 1};
@@ -123,6 +130,11 @@ public final class FrozenColumns {
 		public int layers;
 		/** Particles the frozen water stands for. */
 		public int count;
+		/**
+		 * Beyond the simulated distance: kept as it is (never thaws) until the player comes back within
+		 * the distance less {@link #WAKE_MARGIN}.
+		 */
+		public boolean dormant;
 		/** Per side (-x, +x, -z, +z): up to which height the neighbouring column is solid from the floor. */
 		final float[] wallTop = new float[4];
 
@@ -134,6 +146,11 @@ public final class FrozenColumns {
 		/** Height of the frozen water's top. */
 		public float top(float spacing) {
 			return floor + layers * spacing;
+		}
+
+		/** Per side (-x, +x, -z, +z): up to which height the neighbouring column is solid from the floor. */
+		public float wallTop(int side) {
+			return wallTop[side];
 		}
 	}
 
@@ -405,11 +422,8 @@ public final class FrozenColumns {
 		boolean measured = stats.gridSizeX > 0 && stats.gridSizeZ > 0;
 		int active = ctx.tight ? TIGHT_ACTIVE_LAYERS : ACTIVE_LAYERS;
 		for (Column c : columns.values()) {
-			float cx = c.x + 0.5f - ctx.playerX;
-			float cy = c.floor + 0.5f * c.layers * spacing - ctx.playerY;
-			float cz = c.z + 0.5f - ctx.playerZ;
-			if (cx * cx + cy * cy + cz * cz > ctx.maxDistSq) {
-				target.put(key(c.x, c.z), -1);
+			// Far away it sleeps, as it is (nothing there is simulated), until the player comes back.
+			if (updateDormant(c, ctx)) {
 				continue;
 			}
 			if (!measured) {
@@ -448,7 +462,7 @@ public final class FrozenColumns {
 		for (Long2IntOpenHashMap.Entry e : target.long2IntEntrySet()) {
 			Column c = columns.get(e.getLongKey());
 			int to = e.getIntValue();
-			if (c == null || to >= c.layers) {
+			if (c == null || c.dormant || to >= c.layers) {
 				continue;
 			}
 			if (to < 0) {
@@ -462,10 +476,13 @@ public final class FrozenColumns {
 		return thaws;
 	}
 
-	/** Everything thaws (the water above is gone entirely). */
-	public List<Thaw> thawAll() {
+	/** Everything near enough thaws (the water above is gone entirely); dormant water stays asleep. */
+	public List<Thaw> thawAll(Context ctx) {
 		List<Thaw> thaws = new ArrayList<>();
 		for (Column c : columns.values()) {
+			if (updateDormant(c, ctx)) {
+				continue;
+			}
 			thaws.add(new Thaw(c.x, c.z, c.floor, 0, c.layers, c.count, false));
 		}
 		return thaws;
@@ -832,6 +849,126 @@ public final class FrozenColumns {
 		boxes = out;
 		boxesVersion = version;
 		return boxes;
+	}
+
+	/** Whether {@code c} is (or now becomes) dormant; dormant water wakes {@link #WAKE_MARGIN} inside the distance. */
+	private boolean updateDormant(Column c, Context ctx) {
+		float cx = c.x + 0.5f - ctx.playerX;
+		float cy = c.floor + 0.5f * c.layers * spacing - ctx.playerY;
+		float cz = c.z + 0.5f - ctx.playerZ;
+		float distSq = cx * cx + cy * cy + cz * cz;
+		if (distSq > ctx.maxDistSq) {
+			c.dormant = true;
+		} else if (c.dormant) {
+			float wake = Math.max(0f, (float) Math.sqrt(ctx.maxDistSq) - WAKE_MARGIN);
+			if (distSq < wake * wake) {
+				c.dormant = false;
+			}
+		}
+		return c.dormant;
+	}
+
+	/**
+	 * Water that left the simulated distance goes to sleep where it is: {@code count} particles in
+	 * column {@code x, z} settle on the floor below {@code lowestY} (on top of what already sleeps there),
+	 * dormant until the player comes back.
+	 */
+	public void park(int x, int z, int count, float lowestY, Blocks blocks) {
+		if (count <= 0) {
+			return;
+		}
+		long key = key(x, z);
+		Column c = columns.get(key);
+		if (c == null) {
+			int start = Mth.floor(lowestY);
+			int floor = start;
+			while (floor > start - PARK_FALL && !blocks.solid(x, floor - 1, z)) {
+				floor--;
+			}
+			if (floor <= start - PARK_FALL) {
+				floor = start; // nothing found below (not loaded): it stays at its height
+			}
+			c = new Column(x, z);
+			c.floor = floor;
+			columns.put(key, c);
+		}
+		c.count += count;
+		c.layers = Math.max(c.layers, Math.max(1, (c.count + perLayer - 1) / perLayer));
+		c.dormant = true;
+		float top = c.top(spacing);
+		for (int d = 0; d < 4; d++) {
+			int wall = c.floor;
+			while (wall < top && blocks.solid(x + DX[d], wall, z + DZ[d])) {
+				wall++;
+			}
+			c.wallTop[d] = wall;
+		}
+		frozenParticles += count;
+		changed(x, z);
+	}
+
+	/**
+	 * Takes the columns further than {@code distance} (horizontally) from {@code x, z} out of the volume
+	 * (water too far away to be drawn): {@link #restore}'s arguments, {@code COLUMN} ints and four wall
+	 * heights each, appended to {@code ints} and {@code walls}.
+	 *
+	 * @return how many were taken
+	 */
+	public int extract(float x, float z, float distance, it.unimi.dsi.fastutil.ints.IntArrayList ints,
+		it.unimi.dsi.fastutil.floats.FloatArrayList walls) {
+		float limit = distance * distance;
+		int taken = 0;
+		var it = columns.values().iterator();
+		while (it.hasNext()) {
+			Column c = it.next();
+			float dx = c.x + 0.5f - x;
+			float dz = c.z + 0.5f - z;
+			if (dx * dx + dz * dz <= limit) {
+				continue;
+			}
+			ints.add(c.x);
+			ints.add(c.z);
+			ints.add(c.floor);
+			ints.add(c.layers);
+			ints.add(c.count);
+			for (int d = 0; d < 4; d++) {
+				walls.add(c.wallTop[d]);
+			}
+			frozenParticles -= c.count;
+			dirtyGroups.add(group(c.x, c.z));
+			it.remove();
+			taken++;
+		}
+		if (taken > 0) {
+			version++;
+		}
+		return taken;
+	}
+
+	/**
+	 * Puts back a column as it was saved ({@link Column}): {@code layers} layers of frozen water on the
+	 * floor at {@code floor}, standing for {@code count} particles, with the heights of its walls. It
+	 * comes back dormant and wakes when the player is near enough.
+	 */
+	public void restore(int x, int z, int floor, int layers, int count, float[] walls, int wallsOffset) {
+		if (layers <= 0 || count <= 0) {
+			return;
+		}
+		long key = key(x, z);
+		Column c = columns.get(key);
+		if (c != null) {
+			frozenParticles -= c.count;
+		} else {
+			c = new Column(x, z);
+			columns.put(key, c);
+		}
+		c.floor = floor;
+		c.layers = layers;
+		c.count = count;
+		c.dormant = true;
+		System.arraycopy(walls, wallsOffset, c.wallTop, 0, 4);
+		frozenParticles += count;
+		changed(x, z);
 	}
 
 	public void clear() {

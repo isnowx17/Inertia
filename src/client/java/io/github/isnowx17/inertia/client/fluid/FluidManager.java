@@ -8,6 +8,11 @@ import net.minecraft.client.Minecraft;
 import net.minecraft.client.multiplayer.ClientLevel;
 import net.minecraft.core.BlockPos;
 import net.minecraft.network.chat.Component;
+import net.minecraft.util.Mth;
+import io.github.isnowx17.inertia.util.FrozenColumns;
+import io.github.isnowx17.inertia.util.WaterSaveFile;
+import it.unimi.dsi.fastutil.floats.FloatArrayList;
+import it.unimi.dsi.fastutil.ints.IntArrayList;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.phys.Vec3;
 
@@ -33,6 +38,7 @@ public final class FluidManager {
 	private boolean warnedThisSession;
 	private double playerSubmersion;
 	private final WaterSounds sounds = new WaterSounds();
+	private final WaterStorage storage = new WaterStorage();
 	private final java.util.List<Source> sources = new java.util.ArrayList<>();
 	private long lastSourceToggle = Long.MIN_VALUE / 2;
 	private static final int MAX_SOURCES = 16;
@@ -101,17 +107,29 @@ public final class FluidManager {
 
 	/** Called when the player leaves a world. */
 	public void onDisconnect() {
+		saveWater(true);
 		closeSimulation();
+		forgetWaiting();
+		level = null;
+		storage.enter(Minecraft.getInstance(), null, false);
 	}
 
 	public void tick(Minecraft client) {
 		ClientLevel current = client.level;
 		if (current != level) {
-			// Left the world or changed dimension: water does not travel with the player.
+			// Left the world or changed dimension: water does not travel with the player. It is saved
+			// with the dimension it was in, and the new dimension's water is read.
+			saveWater(true);
 			closeSimulation();
+			forgetWaiting();
 			level = current;
+			storage.enter(client, current, config.saveWater);
 		}
-		if (simulation == null || current == null || client.player == null || client.isPaused()) {
+		if (current == null || client.player == null || client.isPaused()) {
+			return;
+		}
+		restoreWater(client, current);
+		if (simulation == null) {
 			return;
 		}
 
@@ -134,6 +152,9 @@ public final class FluidManager {
 			simulation.setAcousticsWanted(config.waterSounds);
 			if (config.waterSounds) {
 				sounds.tick(client, simulation, playerSubmersion);
+			}
+			if (config.saveWater && storage.due(config.autosaveSeconds * 1_000_000_000L)) {
+				saveWater(false);
 			}
 		} catch (Throwable t) {
 			handleFailure(client.player, t);
@@ -371,6 +392,228 @@ public final class FluidManager {
 		}
 	}
 
+	/**
+	 * Saves the water of the current dimension with the world ({@code wait}: before returning, when
+	 * leaving it): the simulated water, the water asleep far away and saved water not put back yet.
+	 * Also when the game saves the world, and every {@code autosaveSeconds}.
+	 */
+	public void saveWater(boolean wait) {
+		if (!config.saveWater || !storage.mayWrite()) {
+			return;
+		}
+		try {
+			long[] cells = new long[sources.size()];
+			long key = (simulation != null ? simulation.version() : -1) * 31 + dormant.version();
+			key = key * 31 + (pendingWater != null ? pendingWater.particleCount() : 0);
+			for (int i = 0; i < cells.length; i++) {
+				cells[i] = sources.get(i).cell().asLong();
+				key = key * 31 + cells[i];
+			}
+			WaterSaveFile.State state;
+			if (simulation != null) {
+				state = simulation.capture(cells);
+			} else {
+				WaterSaveFile.State p = pendingWater;
+				state = new WaterSaveFile.State(p != null ? p.originX() : 0, p != null ? p.originY() : 0, p != null ? p.originZ() : 0,
+					p != null ? p.spacing() : config.effectiveQuality().particleSpacing(), 0, new float[0], 0, new int[0], new float[0], cells);
+			}
+			storage.write(withWaiting(state), key, wait);
+		} catch (Throwable t) {
+			Inertia.LOGGER.error("Could not save the water", t);
+		}
+	}
+
+	/** {@code state} with the water asleep far away and the saved water not put back yet added. */
+	private WaterSaveFile.State withWaiting(WaterSaveFile.State state) {
+		WaterSaveFile.State p = pendingWater;
+		if (dormant.isEmpty() && p == null) {
+			return state;
+		}
+		int ox = state.originX();
+		int oy = state.originY();
+		int oz = state.originZ();
+		float[] particles = state.particles();
+		int particleCount = state.particleCount();
+		if (p != null && p.particleCount() > 0) {
+			// Moved to this origin (the water stays where it was in the world).
+			int n = p.particleCount() * WaterSaveFile.PARTICLE_FLOATS;
+			particles = java.util.Arrays.copyOf(state.particles(), particleCount * WaterSaveFile.PARTICLE_FLOATS + n);
+			float dx = p.originX() - ox;
+			float dy = p.originY() - oy;
+			float dz = p.originZ() - oz;
+			for (int i = 0; i < n; i += WaterSaveFile.PARTICLE_FLOATS) {
+				int o = particleCount * WaterSaveFile.PARTICLE_FLOATS + i;
+				particles[o] = p.particles()[i] + dx;
+				particles[o + 1] = p.particles()[i + 1] + dy;
+				particles[o + 2] = p.particles()[i + 2] + dz;
+				particles[o + 3] = p.particles()[i + 3];
+				particles[o + 4] = p.particles()[i + 4];
+				particles[o + 5] = p.particles()[i + 5];
+			}
+			particleCount += p.particleCount();
+		}
+		IntArrayList ints = new IntArrayList(state.columns());
+		FloatArrayList walls = new FloatArrayList(state.walls());
+		int columns = state.columnCount() + dormant.appendTo(ints, walls, ox, oy, oz, state.spacing());
+		return new WaterSaveFile.State(ox, oy, oz, state.spacing(), particleCount, particles, columns, ints.toIntArray(),
+			walls.toFloatArray(), state.sources());
+	}
+
+	/** Still water asleep far away, outside the simulation (columns). */
+	public int dormantColumns() {
+		return dormant.columnCount();
+	}
+
+	/** Saves the water, removes it and reads it back from the save (shows that saving works). */
+	public void reloadWater(Minecraft client) {
+		saveWater(true);
+		closeSimulation();
+		forgetWaiting();
+		storage.enter(client, level, config.saveWater);
+	}
+
+	/** Forgets the water that is not simulated (it was saved with its dimension). */
+	private void forgetWaiting() {
+		dormant.clear();
+		pendingWater = null;
+		pendingBox = null;
+		farTicks = 0;
+	}
+
+	/**
+	 * Every tick in a world: takes the saved water once it is read (the moving water waits, the still
+	 * water goes to sleep), puts the moving water back once the player is near and its chunks are
+	 * loaded, wakes sleeping water the player comes near and puts water far away to sleep.
+	 */
+	private void restoreWater(Minecraft client, ClientLevel current) {
+		WaterSaveFile.State loaded = storage.takeLoaded();
+		if (loaded != null) {
+			takeSaved(current, loaded);
+		}
+		if (!client.hasSingleplayerServer() || PhysXRuntime.state() != PhysXRuntime.State.READY || failed) {
+			return;
+		}
+		Vec3 at = client.player.position();
+		double reach = Math.max(8, config.despawnDistance - FrozenColumns.WAKE_MARGIN);
+		if (pendingWater != null && near(pendingBox, at, reach) && loaded(current, pendingBox, Mth.floor(at.y))) {
+			WaterSaveFile.State p = pendingWater;
+			if (simulation != null && simulation.activeCount() > 0) {
+				// New water came first where the saved water was: the new water stays.
+				Inertia.LOGGER.warn("Saved water not restored: there is new water already");
+			} else if (ensureSimulation(client.player)) {
+				int particles = simulation.restore(p);
+				Inertia.LOGGER.info("Saved water restored: {} particles", particles);
+			} else {
+				return;
+			}
+			pendingWater = null;
+			pendingBox = null;
+		}
+		if (++farTicks < FAR_CHECK_TICKS) {
+			return;
+		}
+		farTicks = 0;
+		double far = farDistance();
+		if (simulation != null) {
+			IntArrayList ints = new IntArrayList();
+			FloatArrayList walls = new FloatArrayList();
+			int taken = simulation.takeFarColumns(at.x, at.z, far, ints, walls);
+			if (taken > 0) {
+				dormant.add(ints.elements(), 0, taken, walls.elements(), 0, simulation.params().spacing());
+			}
+		}
+		if (!dormant.isEmpty() && (simulation != null || ensureSimulation(client.player))) {
+			double[] keepOut = pendingBox == null ? null
+				: new double[] {pendingBox[0] - 16, pendingBox[2] - 16, pendingBox[3] + 16, pendingBox[5] + 16};
+			dormant.wake(simulation, current, at.x, at.z, far - 16, keepOut);
+		}
+	}
+
+	/** Water further away than this (horizontally) sleeps outside the simulation and is not drawn. */
+	private double farDistance() {
+		return Math.max(config.despawnDistance * 2.0, config.despawnDistance + 64.0);
+	}
+
+	private static final int FAR_CHECK_TICKS = 10;
+	private int farTicks;
+	/** Water asleep far away (see {@link DormantWater}). */
+	private final DormantWater dormant = new DormantWater();
+	/** Saved moving water waiting for the player to come near, and its world box (min x, y, z, max x, y, z). */
+	private WaterSaveFile.State pendingWater;
+	private double[] pendingBox;
+
+	/** The saved water of the dimension just entered: its still water sleeps, its moving water waits. */
+	private void takeSaved(ClientLevel current, WaterSaveFile.State saved) {
+		int[] cols = saved.columns();
+		int n = saved.columnCount();
+		int[] world = new int[n * WaterSaveFile.COLUMN_INTS];
+		float[] walls = new float[n * 4];
+		for (int k = 0; k < n; k++) {
+			int o = k * WaterSaveFile.COLUMN_INTS;
+			world[o] = cols[o] + saved.originX();
+			world[o + 1] = cols[o + 1] + saved.originZ();
+			world[o + 2] = cols[o + 2] + saved.originY();
+			world[o + 3] = cols[o + 3];
+			world[o + 4] = cols[o + 4];
+			for (int d = 0; d < 4; d++) {
+				walls[k * 4 + d] = saved.walls()[k * 4 + d] + saved.originY();
+			}
+		}
+		dormant.add(world, 0, n, walls, 0, saved.spacing());
+		if (saved.particleCount() > 0) {
+			pendingWater = new WaterSaveFile.State(saved.originX(), saved.originY(), saved.originZ(), saved.spacing(),
+				saved.particleCount(), saved.particles(), 0, new int[0], new float[0], new long[0]);
+			pendingBox = particleBox(pendingWater);
+		}
+		for (long cell : saved.sources()) {
+			BlockPos pos = BlockPos.of(cell);
+			if (sources.size() < MAX_SOURCES) {
+				sources.add(new Source(pos));
+			}
+		}
+		Inertia.LOGGER.info("Saved water read: {} particles, {} still columns, {} sources", saved.particleCount(), n,
+			saved.sources().length);
+	}
+
+	private static double[] particleBox(WaterSaveFile.State s) {
+		double[] b = {Double.POSITIVE_INFINITY, Double.POSITIVE_INFINITY, Double.POSITIVE_INFINITY,
+			Double.NEGATIVE_INFINITY, Double.NEGATIVE_INFINITY, Double.NEGATIVE_INFINITY};
+		float[] p = s.particles();
+		for (int i = 0; i < s.particleCount(); i++) {
+			int o = i * WaterSaveFile.PARTICLE_FLOATS;
+			double x = p[o] + s.originX();
+			double y = p[o + 1] + s.originY();
+			double z = p[o + 2] + s.originZ();
+			b[0] = Math.min(b[0], x);
+			b[1] = Math.min(b[1], y);
+			b[2] = Math.min(b[2], z);
+			b[3] = Math.max(b[3], x);
+			b[4] = Math.max(b[4], y);
+			b[5] = Math.max(b[5], z);
+		}
+		return b;
+	}
+
+	/** Whether {@code at} is within {@code reach} of the box. */
+	private static boolean near(double[] box, Vec3 at, double reach) {
+		double dx = Math.max(0, Math.max(box[0] - at.x, at.x - box[3]));
+		double dy = Math.max(0, Math.max(box[1] - at.y, at.y - box[4]));
+		double dz = Math.max(0, Math.max(box[2] - at.z, at.z - box[5]));
+		return dx * dx + dy * dy + dz * dz <= reach * reach;
+	}
+
+	/** Whether all chunks under the box are loaded. */
+	private static boolean loaded(ClientLevel level, double[] box, int y) {
+		for (int cx = Mth.floor(box[0]) >> 4; cx <= Mth.floor(box[3]) >> 4; cx++) {
+			for (int cz = Mth.floor(box[2]) >> 4; cz <= Mth.floor(box[5]) >> 4; cz++) {
+				if (!level.isLoaded(new BlockPos(cx << 4, y, cz << 4))) {
+					return false;
+				}
+			}
+		}
+		return true;
+	}
+
 	/** Whether water can be in a block: nothing there to collide with. */
 	private static boolean isOpen(net.minecraft.world.level.Level level, BlockPos cell) {
 		return level.getBlockState(cell).getCollisionShape(level, cell).isEmpty();
@@ -448,6 +691,10 @@ public final class FluidManager {
 	public int clear() {
 		sources.clear();
 		pendingSpawns.clear();
+		// All of it: the water asleep far away and saved water not put back yet too.
+		dormant.clear();
+		pendingWater = null;
+		pendingBox = null;
 		if (simulation == null) {
 			return 0;
 		}
@@ -469,6 +716,8 @@ public final class FluidManager {
 	private void handleFailure(Player player, Throwable t) {
 		Inertia.LOGGER.error("Fluid simulation failed and was stopped", t);
 		failed = true;
+		// The last save is kept: the water that was lost with the simulation is not written over it.
+		storage.stopWriting();
 		closeSimulation();
 		if (player != null) {
 			player.sendSystemMessage(Component.translatable("message.inertia.failed").withStyle(ChatFormatting.RED));

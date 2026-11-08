@@ -637,6 +637,161 @@ public final class FluidSimulation implements AutoCloseable {
 	}
 
 	/**
+	 * The water as it is now, copied for saving with the world: the particles of the newest step and
+	 * the still water kept as a volume. Client thread; does not wait for a running step.
+	 *
+	 * @param sources the flowing sources (world {@code BlockPos.asLong}), saved with it
+	 */
+	public io.github.isnowx17.inertia.util.WaterSaveFile.State capture(long[] sources) {
+		int n = activeCount;
+		float[] particles = new float[n * io.github.isnowx17.inertia.util.WaterSaveFile.PARTICLE_FLOATS];
+		for (int i = 0; i < n; i++) {
+			int o = i * 6;
+			int p = i * STRIDE;
+			particles[o] = currPos[p];
+			particles[o + 1] = currPos[p + 1];
+			particles[o + 2] = currPos[p + 2];
+			particles[o + 3] = velocity[p];
+			particles[o + 4] = velocity[p + 1];
+			particles[o + 5] = velocity[p + 2];
+		}
+		int columnCount = frozen != null ? frozen.columnCount() : 0;
+		int[] columns = new int[columnCount * io.github.isnowx17.inertia.util.WaterSaveFile.COLUMN_INTS];
+		float[] walls = new float[columnCount * 4];
+		if (frozen != null) {
+			int k = 0;
+			for (FrozenColumns.Column c : frozen.columns()) {
+				columns[k * 5] = c.x;
+				columns[k * 5 + 1] = c.z;
+				columns[k * 5 + 2] = c.floor;
+				columns[k * 5 + 3] = c.layers;
+				columns[k * 5 + 4] = c.count;
+				for (int side = 0; side < 4; side++) {
+					walls[k * 4 + side] = c.wallTop(side);
+				}
+				k++;
+			}
+		}
+		return new io.github.isnowx17.inertia.util.WaterSaveFile.State(originX, originY, originZ, params.spacing(), n, particles,
+			columnCount, columns, walls, sources);
+	}
+
+	/**
+	 * Puts saved water back into this simulation while it has no moving water. Water saved with another
+	 * particle spacing keeps its volume: each saved particle becomes as many particles as it holds
+	 * water. As much as fits within the particle limit.
+	 *
+	 * @return particles added (not counting the still water kept as a volume)
+	 */
+	public int restore(io.github.isnowx17.inertia.util.WaterSaveFile.State saved) {
+		awaitStep();
+		if (activeCount > 0) {
+			return 0;
+		}
+		if (frozenEmpty() || !originSet) {
+			rebase(new BlockPos(saved.originX(), saved.originY(), saved.originZ()));
+		}
+		// Saved relative to its own origin: moved to this one (the water stays where it was in the world).
+		float shiftX = saved.originX() - originX;
+		float shiftY = saved.originY() - originY;
+		float shiftZ = saved.originZ() - originZ;
+		float spacing = params.spacing();
+		double ratio = Math.pow(saved.spacing() / spacing, 3);
+		int wanted = (int) Math.min(Integer.MAX_VALUE / 2, Math.ceil(saved.particleCount() * ratio));
+		int room = Math.min(wanted, ensureRoom(wanted));
+		if (room < wanted) {
+			io.github.isnowx17.inertia.Inertia.LOGGER.warn("Saved water does not fit the particle limit: {} of {} particles restored", room, wanted);
+		}
+		float invMass = 1f / params.particleMass();
+		ThreadLocalRandom random = ThreadLocalRandom.current();
+		LongOpenHashSet sections = new LongOpenHashSet();
+		float minX = Float.POSITIVE_INFINITY;
+		float minZ = Float.POSITIVE_INFINITY;
+		float maxX = Float.NEGATIVE_INFINITY;
+		float maxZ = Float.NEGATIVE_INFINITY;
+		float[] p = saved.particles();
+		int start = activeCount;
+		int written = 0;
+		for (int j = 0; j < saved.particleCount() && written < room; j++) {
+			int o = j * io.github.isnowx17.inertia.util.WaterSaveFile.PARTICLE_FLOATS;
+			int copies = (int) ratio + (random.nextDouble() < ratio - Math.floor(ratio) ? 1 : 0);
+			for (int c = 0; c < copies && written < room; c++) {
+				// Copies of one saved particle spread over the room it held.
+				float spread = c == 0 ? 0f : saved.spacing() * 0.5f;
+				float px = p[o] + shiftX + (random.nextFloat() - 0.5f) * spread;
+				float py = p[o + 1] + shiftY + (random.nextFloat() - 0.5f) * spread;
+				float pz = p[o + 2] + shiftZ + (random.nextFloat() - 0.5f) * spread;
+				int i = start + written;
+				hostPos.put(i * 4, px).put(i * 4 + 1, py).put(i * 4 + 2, pz).put(i * 4 + 3, invMass);
+				hostVel.put(i * 4, p[o + 3]).put(i * 4 + 1, p[o + 4]).put(i * 4 + 2, p[o + 5]).put(i * 4 + 3, 0f);
+				currPos[i * STRIDE] = px;
+				currPos[i * STRIDE + 1] = py;
+				currPos[i * STRIDE + 2] = pz;
+				prevPos[i * STRIDE] = px;
+				prevPos[i * STRIDE + 1] = py;
+				prevPos[i * STRIDE + 2] = pz;
+				velocity[i * STRIDE] = p[o + 3];
+				velocity[i * STRIDE + 1] = p[o + 4];
+				velocity[i * STRIDE + 2] = p[o + 5];
+				minX = Math.min(minX, px);
+				maxX = Math.max(maxX, px);
+				minZ = Math.min(minZ, pz);
+				maxZ = Math.max(maxZ, pz);
+				sections.add(SectionPos.asLong(Mth.floor(px + originX) >> 4, Mth.floor(py + originY) >> 4, Mth.floor(pz + originZ) >> 4));
+				written++;
+			}
+		}
+		if (written > 0) {
+			uploadRange(start, written, true);
+			activeCount += written;
+			buffer.setNbActiveParticles(activeCount);
+			noteAdded(minX, minZ, maxX + 1f, maxZ + 1f);
+		}
+
+		// The still water kept as a volume: as it was, in layers of this spacing.
+		int[] cols = saved.columns();
+		for (int k = 0; k < saved.columnCount(); k++) {
+			int x = cols[k * 5];
+			int z = cols[k * 5 + 1];
+			int floor = cols[k * 5 + 2];
+			int layers = Math.max(1, Math.round(cols[k * 5 + 3] * saved.spacing() / spacing));
+			int count = (int) Math.round(cols[k * 5 + 4] * ratio);
+			if (frozen != null) {
+				frozen.restore(x, z, floor, layers, count, saved.walls(), k * 4);
+			} else {
+				// Without still water kept as a volume it becomes particles again (as far as they fit).
+				int free = ensureRoom(count);
+				if (free > 0) {
+					int from = activeCount;
+					int added = spawnThawed(new FrozenColumns.Thaw(x, z, floor, 0, layers, Math.min(count, free), false));
+					uploadRange(from, added, true);
+					buffer.setNbActiveParticles(activeCount);
+					written += added;
+				}
+			}
+			for (int y = floor; y <= floor + layers * spacing + 1; y += 8) {
+				sections.add(SectionPos.asLong((x + originX) >> 4, (y + originY) >> 4, (z + originZ) >> 4));
+			}
+		}
+		// Collision geometry around all of it must exist before the next step.
+		for (long section : sections.toLongArray()) {
+			int sx = SectionPos.x(section);
+			int sy = SectionPos.y(section);
+			int sz = SectionPos.z(section);
+			for (int dx = -1; dx <= 1; dx++) {
+				for (int dy = -1; dy <= 1; dy++) {
+					for (int dz = -1; dz <= 1; dz++) {
+						pendingUrgentSections.add(SectionPos.asLong(sx + dx, sy + dy, sz + dz));
+					}
+				}
+			}
+		}
+		version++;
+		wake();
+		return written;
+	}
+
+	/**
 	 * Lets a steady flow of water out of the block of a flowing water source: every tick the same
 	 * amount of water ({@code blocksPerSecond}) appears in the free places of the block, the top
 	 * layer first, moving down at {@code blocksPerSecond} blocks per second. While the stream falls
@@ -1450,6 +1605,7 @@ public final class FluidSimulation implements AutoCloseable {
 		version++;
 
 		IntArrayList remove = finished.lost;
+		parkFarWater(finished.lost);
 		if (frozen != null && frozen.hasPlans()) {
 			frozenRemoval.clear();
 			frozen.commit(finished, currPos, STRIDE, frozenRemoval);
@@ -1462,6 +1618,107 @@ public final class FluidSimulation implements AutoCloseable {
 		updateSolver();
 		boolean still = finished.moving <= stepParticleCount * MOVING_FRACTION && finished.inside == 0 && finished.lost.isEmpty();
 		stillSteps = still ? stillSteps + 1 : 0;
+	}
+
+	/** The level the frozen water was last updated in (for the blocks parked water settles on). */
+	private ClientLevel parkLevel;
+
+	/**
+	 * Water that went further from the player than the simulated distance is not removed: it goes to
+	 * sleep as still water where it is (see {@link FrozenColumns#park}), and wakes when the player comes
+	 * back. Water that fell out of the world (or broke) is removed. Client thread.
+	 */
+	private void parkFarWater(IntArrayList lost) {
+		if (frozen == null || parkLevel == null || lost.isEmpty()) {
+			return;
+		}
+		float minY = scanSettings.minY;
+		it.unimi.dsi.fastutil.longs.Long2IntOpenHashMap counts = new it.unimi.dsi.fastutil.longs.Long2IntOpenHashMap();
+		it.unimi.dsi.fastutil.longs.Long2FloatOpenHashMap lowest = new it.unimi.dsi.fastutil.longs.Long2FloatOpenHashMap();
+		lowest.defaultReturnValue(Float.POSITIVE_INFINITY);
+		int[] indices = lost.elements();
+		for (int k = 0, n = lost.size(); k < n; k++) {
+			int o = indices[k] * STRIDE;
+			float x = currPos[o];
+			float y = currPos[o + 1];
+			float z = currPos[o + 2];
+			if (!Float.isFinite(x) || !Float.isFinite(y) || !Float.isFinite(z) || y < minY) {
+				continue;
+			}
+			long key = FrozenColumns.key(Mth.floor(x), Mth.floor(z));
+			counts.addTo(key, 1);
+			lowest.put(key, Math.min(lowest.get(key), y));
+		}
+		if (counts.isEmpty()) {
+			return;
+		}
+		LevelBlocks blocks = new LevelBlocks(parkLevel, originX, originY, originZ);
+		for (var e : counts.long2IntEntrySet()) {
+			long key = e.getLongKey();
+			frozen.park((int) (key >> 32), (int) key, e.getIntValue(), lowest.get(key), blocks);
+		}
+		version++;
+	}
+
+	/**
+	 * Takes the still water further than {@code distance} blocks (horizontally) from the world position
+	 * {@code x, z} out of the simulation, in world coordinates: {@link #putColumns}'s arguments.
+	 *
+	 * @return how many columns were taken
+	 */
+	public int takeFarColumns(double x, double z, double distance, it.unimi.dsi.fastutil.ints.IntArrayList ints,
+		it.unimi.dsi.fastutil.floats.FloatArrayList walls) {
+		if (frozen == null || frozen.isEmpty()) {
+			return 0;
+		}
+		int from = ints.size();
+		int wallsFrom = walls.size();
+		int taken = frozen.extract((float) (x - originX), (float) (z - originZ), (float) distance, ints, walls);
+		for (int i = from; i < ints.size(); i += io.github.isnowx17.inertia.util.WaterSaveFile.COLUMN_INTS) {
+			ints.set(i, ints.getInt(i) + originX);
+			ints.set(i + 1, ints.getInt(i + 1) + originZ);
+			ints.set(i + 2, ints.getInt(i + 2) + originY);
+		}
+		for (int i = wallsFrom; i < walls.size(); i++) {
+			walls.set(i, walls.getFloat(i) + originY);
+		}
+		if (taken > 0) {
+			version++;
+		}
+		return taken;
+	}
+
+	/**
+	 * Puts still water back (world coordinates: x, z, floor, layers, count per column, and four wall
+	 * heights as world y): it comes back asleep and wakes when the player is near enough. Water saved
+	 * with another particle spacing keeps its height.
+	 *
+	 * @return false without still water kept as a volume (stillWaterVolume off)
+	 */
+	public boolean putColumns(int[] ints, int offset, int count, float[] walls, int wallOffset, float savedSpacing, BlockPos around) {
+		if (frozen == null) {
+			return false;
+		}
+		awaitStep();
+		if ((activeCount == 0 && frozenEmpty()) || !originSet) {
+			rebase(around);
+		}
+		float spacing = params.spacing();
+		double ratio = Math.pow(savedSpacing / spacing, 3);
+		float[] wall = new float[4];
+		for (int k = 0; k < count; k++) {
+			int o = offset + k * io.github.isnowx17.inertia.util.WaterSaveFile.COLUMN_INTS;
+			int floor = ints[o + 2] - originY;
+			for (int d = 0; d < 4; d++) {
+				wall[d] = walls[wallOffset + k * 4 + d] - originY;
+			}
+			int layers = Math.max(1, Math.round(ints[o + 3] * savedSpacing / spacing));
+			int particles = (int) Math.max(1, Math.round(ints[o + 4] * ratio));
+			frozen.restore(ints[o] - originX, ints[o + 1] - originZ, floor, layers, particles, wall, 0);
+		}
+		version++;
+		wake();
+		return true;
 	}
 
 	/**
@@ -1603,6 +1860,7 @@ public final class FluidSimulation implements AutoCloseable {
 	 * plans the freezing of calm water for the step and brings the boxes in the scene up to date.
 	 */
 	private void updateFrozen(ClientLevel level, Player player) {
+		parkLevel = level;
 		FrozenColumns.Context ctx = new FrozenColumns.Context();
 		ctx.player = config.playerInteraction && !player.isSpectator();
 		net.minecraft.world.phys.AABB box = player.getBoundingBox();
@@ -1640,7 +1898,7 @@ public final class FluidSimulation implements AutoCloseable {
 		ctx.overloaded = stepLoadMillis > GPU_OVERLOADED_MILLIS;
 
 		if (!frozen.isEmpty()) {
-			java.util.List<FrozenColumns.Thaw> thaws = activeCount == 0 ? frozen.thawAll() : frozen.thaw(scan, ctx);
+			java.util.List<FrozenColumns.Thaw> thaws = activeCount == 0 ? frozen.thawAll(ctx) : frozen.thaw(scan, ctx);
 			if (!thaws.isEmpty()) {
 				long needed = 0;
 				for (FrozenColumns.Thaw t : thaws) {

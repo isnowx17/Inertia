@@ -517,6 +517,13 @@ public final class InertiaBenchmark implements ClientModInitializer {
 		moveTo(client, x, y - 1.62, z, yaw, pitch);
 	}
 
+	private static void report(FluidManager fluids, String when) {
+		FluidSimulation sim = fluids.simulation();
+		LOGGER.info("TRAVEL {}: simulated {} particles and {} frozen in {} columns, asleep far away {} columns", when,
+			sim != null ? sim.activeCount() : 0, sim != null ? sim.frozenParticles() : 0, sim != null ? sim.frozenColumns() : 0,
+			fluids.dormantColumns());
+	}
+
 	private void shot(Minecraft client, String name) {
 		Screenshot.grab(client.gameDirectory, "showcase-" + name + ".png", client.gameRenderer.mainRenderTarget(), 1, m -> { });
 		LOGGER.info("SHOWCASE shot {}", name);
@@ -565,6 +572,61 @@ public final class InertiaBenchmark implements ClientModInitializer {
 		}
 		if (event(0, t, 300)) {
 			command(client, "summon minecraft:oak_boat 4.5 -58 3.5 {Rotation:[60f,0f]}");
+		}
+		if (Boolean.getBoolean("inertia.showcase.travel")) {
+			// Far water: the player goes 400 blocks away (the water sleeps, then leaves the simulation),
+			// the water is saved and read back while far, and the player comes back.
+			if (event(1, t, at)) {
+				look(client, 13.5, -53, 14.5, 0, -58.5, -3);
+			}
+			if (event(2, t, at + 40)) {
+				report(fluids, "before");
+				shot(client, "before-travel");
+				moveTo(client, 400.5, -60, 0.5, 0, 0);
+			}
+			if (event(3, t, at + 160)) {
+				report(fluids, "far");
+				fluids.reloadWater(client);
+			}
+			if (event(4, t, at + 220)) {
+				report(fluids, "far, read back");
+				look(client, 13.5, -53, 14.5, 0, -58.5, -3);
+			}
+			if (event(5, t, at + 400)) {
+				report(fluids, "back");
+				shot(client, "after-travel");
+			}
+			if (event(6, t, at + 420)) {
+				stage = Stage.DONE;
+				client.stop();
+			}
+			return;
+		}
+		if (Boolean.getBoolean("inertia.showcase.reload")) {
+			// Saving: the water before, saved and read back, and after.
+			FluidSimulation sim = fluids.simulation();
+			if (event(1, t, at)) {
+				look(client, 13.5, -53, 14.5, 0, -58.5, -3);
+			}
+			if (event(2, t, at + 40) && sim != null) {
+				LOGGER.info("SAVE before: {} particles, {} frozen in {} columns", sim.activeCount(), sim.frozenParticles(), sim.frozenColumns());
+				shot(client, "before-reload");
+				fluids.reloadWater(client);
+			}
+			if (event(3, t, at + 41)) {
+				LOGGER.info("SAVE removed: simulation {}", fluids.simulation() == null ? "closed" : "still there");
+			}
+			if (event(4, t, at + 120) && sim != null) {
+				FluidSimulation again = fluids.simulation();
+				LOGGER.info("SAVE after: {}", again == null ? "nothing restored"
+					: again.activeCount() + " particles, " + again.frozenParticles() + " frozen in " + again.frozenColumns() + " columns");
+				shot(client, "after-reload");
+			}
+			if (event(5, t, at + 140)) {
+				stage = Stage.DONE;
+				client.stop();
+			}
+			return;
 		}
 		if (Boolean.getBoolean("inertia.showcase.gif")) {
 			// Clips: each view held for CLIP ticks while the screen is recorded from outside.

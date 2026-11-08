@@ -3,6 +3,24 @@
 All notable changes to Inertia are documented here. Versioning rules are described in
 [PLAN.md](PLAN.md#5-sürümleme).
 
+## [2.2.0]
+
+### Added
+- **The water is saved with the world** (`saveWater`, on by default): the moving water (every
+  particle with its velocity), the still water kept as a volume and the flowing sources, per
+  dimension in `<world>/inertia/water-<dimension>.dat`. Saved when leaving the world or the
+  dimension, when the game saves the world, and every `autosaveSeconds` (60) when the water changed;
+  written in the background, compressed, to a temporary file that then replaces the old one. Back in
+  the world, the moving water returns once the chunks it lies in are loaded, so it does not fall
+  through the ground. Water saved with another particle spacing keeps its volume. An unreadable save
+  is moved aside instead of being written over.
+- **Water far away stays.** Water further than `despawnDistance` from the player is no longer
+  removed: it goes to sleep as still water where it is (on the ground below it), and the moving
+  water nearby rests against it instead of flowing away. Beyond twice that distance it leaves the
+  simulation and is kept per chunk (nothing is simulated or drawn there, however far you travel).
+  When the player comes back it returns once its chunk is loaded and wakes 8 blocks inside the
+  distance. All of it is saved. `/inertia clear` removes this water too.
+
 ## [2.1.0]
 
 ### Added
